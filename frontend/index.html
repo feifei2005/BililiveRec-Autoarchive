@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>录播自动归档工具</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边导航 -->
+        <nav class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">📹</span>
+                <span class="logo-text">录播归档</span>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-page="status">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">状态面板</span>
+                </li>
+                <li class="nav-item" data-page="tasks">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-text">任务列表</span>
+                </li>
+                <li class="nav-item" data-page="config">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-text">配置设置</span>
+                </li>
+                <li class="nav-item" data-page="logs">
+                    <span class="nav-icon">📝</span>
+                    <span class="nav-text">错误日志</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <span id="version-info">版本: --</span>
+            </div>
+        </nav>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 状态面板页面 -->
+            <section id="page-status" class="page active">
+                <div class="page-header">
+                    <h1>状态面板</h1>
+                    <button id="btn-scan-now" class="btn btn-primary">
+                        <span class="btn-icon">🔍</span>
+                        立即扫描
+                    </button>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon success">✅</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-processed">0</span>
+                            <span class="stat-label">已处理</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon warning">⏳</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-pending">0</span>
+                            <span class="stat-label">待处理</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon info">🔄</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-processing">0</span>
+                            <span class="stat-label">处理中</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon error">❌</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-failed">0</span>
+                            <span class="stat-label">失败</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon muted">🗑️</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-discarded">0</span>
+                            <span class="stat-label">已丢弃</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="recent-tasks">
+                    <h2>最近任务</h2>
+                    <div class="task-list" id="recent-task-list">
+                        <div class="empty-state">暂无任务</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 任务列表页面 -->
+            <section id="page-tasks" class="page">
+                <div class="page-header">
+                    <h1>任务列表</h1>
+                    <div class="task-filters">
+                        <select id="task-filter" class="select-input">
+                            <option value="all">全部任务</option>
+                            <option value="processing">处理中</option>
+                            <option value="pending">待处理</option>
+                            <option value="completed">已完成</option>
+                            <option value="failed">失败</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="task-table-container">
+                    <table class="task-table">
+                        <thead>
+                            <tr>
+                                <th>状态</th>
+                                <th>主播</th>
+                                <th>输入文件</th>
+                                <th>进度</th>
+                                <th>创建时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="task-table-body">
+                            <tr>
+                                <td colspan="5" class="empty-state">暂无任务</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- 配置页面 -->
+            <section id="page-config" class="page">
+                <div class="page-header">
+                    <h1>配置设置</h1>
+                    <button id="btn-save-config" class="btn btn-primary">
+                        <span class="btn-icon">💾</span>
+                        保存配置
+                    </button>
+                </div>
+                
+                <div class="config-sections">
+                    <!-- 路径设置 -->
+                    <div class="config-section">
+                        <h2>📁 路径设置</h2>
+                        <div class="form-group">
+                            <label for="config-inputDir">输入目录</label>
+                            <input type="text" id="config-inputDir" class="text-input" placeholder="录播姬录制文件所在目录">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-outputRoot">输出目录</label>
+                            <input type="text" id="config-outputRoot" class="text-input" placeholder="归档文件输出目录">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-discardDir">丢弃目录</label>
+                            <input type="text" id="config-discardDir" class="text-input" placeholder="无效文件移动目标目录">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-ffmpegPath">FFmpeg 路径</label>
+                            <input type="text" id="config-ffmpegPath" class="text-input" placeholder="ffmpeg.exe 完整路径">
+                        </div>
+                        <div class="form-group">
+                            <label for="config-ffprobePath">FFprobe 路径</label>
+                            <input type="text" id="config-ffprobePath" class="text-input" placeholder="ffprobe.exe 完整路径">
+                        </div>
+                    </div>
+
+                    <!-- 处理参数 -->
+                    <div class="config-section">
+                        <h2>🔧 处理参数</h2>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="config-maxConcurrent">最大并发数</label>
+                                <input type="number" id="config-maxConcurrent" class="text-input" min="1" max="10" value="2">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-minFileSizeKB">最小文件大小 (KB)</label>
+                                <input type="number" id="config-minFileSizeKB" class="text-input" min="0" value="1024">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="config-pathTemplate">路径模板</label>
+                            <input type="text" id="config-pathTemplate" class="text-input" placeholder="{{.StreamerName}}/{{.Year}}/{{.Month}}">
+                            <span class="form-hint">可用变量: {{.StreamerName}}, {{.Year}}, {{.Month}}, {{.Day}}</span>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-checkVideoStream">
+                                <span class="checkbox-text">检查视频流有效性</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 服务器设置 -->
+                    <div class="config-section">
+                        <h2>🌐 Webhook 服务器</h2>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="config-serverPort">端口</label>
+                                <input type="number" id="config-serverPort" class="text-input" min="1" max="65535" value="9880">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-webhookPath">Webhook 路径</label>
+                                <input type="text" id="config-webhookPath" class="text-input" placeholder="/webhook">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 系统设置 -->
+                    <div class="config-section">
+                        <h2>💻 系统设置</h2>
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-autoStart">
+                                <span class="checkbox-text">开机自启动</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 高级设置 -->
+                    <div class="config-section collapsible">
+                        <h2 class="section-toggle">🔬 高级设置 <span class="toggle-icon">▼</span></h2>
+                        <div class="section-content">
+                            <div class="form-group">
+                                <label for="config-defaultCover">默认封面路径</label>
+                                <input type="text" id="config-defaultCover" class="text-input" placeholder="默认封面图片路径">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-customArgs">自定义 FFmpeg 参数</label>
+                                <textarea id="config-customArgs" class="textarea-input" rows="3" placeholder="每行一个参数"></textarea>
+                                <span class="form-hint">每行一个参数，会覆盖默认参数</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 错误日志页面 -->
+            <section id="page-logs" class="page">
+                <div class="page-header">
+                    <h1>错误日志</h1>
+                    <button id="btn-refresh-logs" class="btn btn-secondary">
+                        <span class="btn-icon">🔄</span>
+                        刷新
+                    </button>
+                </div>
+                
+                <div class="log-list" id="error-log-list">
+                    <div class="empty-state">暂无错误日志</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 消息提示 -->
+    <div id="toast-container"></div>
+
+    <script src="main.js"></script>
+</body>
+</html>

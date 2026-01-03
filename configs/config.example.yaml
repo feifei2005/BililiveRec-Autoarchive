@@ -1,0 +1,57 @@
+# BililiveRecorder 自动整理工具配置文件
+# 复制此文件为 config.yaml 并根据需要修改
+
+# 全局设置 - Webhook 服务器配置
+server:
+  port: 8080                    # 监听端口
+  webhook_path: "/webhook"      # Webhook 路径
+
+# 录制处理设置
+processing:
+  input_dir: "C:\\Videos\\Recordings"       # 录制文件输入目录（录播姬工作目录）
+  output_root: "D:\\Archive\\Bilibili"      # 整理后的输出根目录
+  discard_dir: "D:\\Archive\\Discarded"     # 无效文件存放目录（留空则直接删除）
+  max_concurrent: 2                         # 最大并发处理数
+  min_file_size_kb: 1024                    # 最小文件大小（KB），小于此值的文件将被检查
+  check_video_stream: true                  # 是否使用 ffprobe 检查视频流有效性
+  delete_original: false                    # 处理成功后是否删除原文件
+  conflict_mode: "skip"                     # 文件名冲突处理模式：skip（跳过）、overwrite（覆盖）、rename（重命名）
+  scan_interval_min: 5                      # 定时扫描间隔（分钟）
+
+# 命名与目录规则
+rules:
+  # 主播名解析正则表达式
+  # 示例文件名: 20231225-某主播名-直播标题.flv
+  # 此正则会匹配第一个 - 后的字符作为主播名
+  streamer_name_regex: "-([^\\-]+)"
+  
+  # 日期解析正则表达式
+  # 匹配 8 位数字格式的日期，如 20231225
+  date_regex: "(\\d{8})"
+  
+  # 输出路径模板
+  # 支持的变量: {{.OutputDir}}, {{.Streamer}}, {{.Year}}, {{.Month}}, {{.Day}}
+  # 示例输出: D:\Archive\Bilibili\某主播\2023\12\25\
+  path_template: "{{.OutputDir}}\\{{.Streamer}}\\{{.Year}}\\{{.Month}}\\{{.Day}}"
+
+# 封面设置
+covers:
+  # 默认封面路径（当找不到同名封面时使用）
+  # 留空则不嵌入封面
+  default_cover: ""
+  # 是否保存封面历史记录到数据库（用于封面回退查找）
+  save_history: true
+
+# FFmpeg 设置
+ffmpeg:
+  # FFmpeg 可执行文件路径（如果在 PATH 中可直接使用 "ffmpeg"）
+  path: "ffmpeg"
+  # FFprobe 可执行文件路径
+  ffprobe_path: "ffprobe"
+  # 自定义 FFmpeg 参数（转封装时使用）
+  custom_args:
+    - "-c"
+    - "copy"
+
+# 注意：数据库文件 (data.db) 默认保存在程序运行目录
+# 日志默认输出到控制台

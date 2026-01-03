@@ -1,0 +1,130 @@
+# ====================
+# Go 项目忽略规则
+# ====================
+
+# 二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试二进制文件
+*.test
+
+# 输出目录
+/build/
+/dist/
+/bin/
+
+# Go 工作区文件
+go.work
+go.work.sum
+
+# ====================
+# IDE 和编辑器
+# ====================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (GoLand)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ====================
+# 操作系统
+# ====================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# ====================
+# 项目特定
+# ====================
+
+# 配置文件（保留示例）
+config.yaml
+*.local.yaml
+
+# 数据库文件
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 封面缓存
+covers_cache/
+
+# ====================
+# Wails 前端
+# ====================
+
+# Node.js
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+frontend/.nuxt/
+
+# 构建产物
+frontend/wailsjs/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# ====================
+# 依赖管理
+# ====================
+
+# Go vendor（如果使用）
+# vendor/
+
+# Go sum 备份
+go.sum.bak
+
+# ====================
+# 用户指定忽略规则
+# ====================
+
+# 构建产物
+build/
+*.exe
+
+# 运行时文件
+*.log
+*.db
+data.db
+app.log
+
+# 测试文件夹（录制样本）
+*蜜糖糖lilo*/
+新建文件夹/
