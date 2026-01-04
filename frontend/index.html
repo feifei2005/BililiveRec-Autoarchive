@@ -53,8 +53,8 @@
                     <div class="stat-card">
                         <div class="stat-icon success">✅</div>
                         <div class="stat-info">
-                            <span class="stat-value" id="stat-processed">0</span>
-                            <span class="stat-label">已处理</span>
+                            <span class="stat-value" id="stat-success">0</span>
+                            <span class="stat-label">已成功</span>
                         </div>
                     </div>
                     <div class="stat-card">
@@ -104,8 +104,9 @@
                             <option value="all">全部任务</option>
                             <option value="processing">处理中</option>
                             <option value="pending">待处理</option>
-                            <option value="completed">已完成</option>
+                            <option value="success">已成功</option>
                             <option value="failed">失败</option>
+                            <option value="discarded">已丢弃</option>
                         </select>
                     </div>
                 </div>
@@ -189,6 +190,13 @@
                                 <input type="checkbox" id="config-checkVideoStream">
                                 <span class="checkbox-text">检查视频流有效性</span>
                             </label>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-discardFailedFiles">
+                                <span class="checkbox-text">处理失败时进入丢弃流程</span>
+                            </label>
+                            <span class="form-hint">开启后，转封装失败的文件会移动到丢弃目录或直接删除；关闭则保留在原位</span>
                         </div>
                     </div>
 

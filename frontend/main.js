@@ -45,15 +45,18 @@ function formatPath(path) {
 // 获取状态徽章 HTML
 function getStatusBadge(status) {
     const statusMap = {
-        'completed': '已完成',
+        'success': '已成功',
+        'completed': '已成功', // 向后兼容
         'processing': '处理中',
         'pending': '待处理',
         'failed': '失败',
         'discarded': '已丢弃'
     };
     
+    // 将 completed 统一映射为 success 以便 CSS 样式正确应用
+    const normalizedStatus = status.toLowerCase() === 'completed' ? 'success' : status.toLowerCase();
     const text = statusMap[status.toLowerCase()] || status;
-    return `<span class="status-badge status-${status.toLowerCase()}">${text}</span>`;
+    return `<span class="status-badge status-${normalizedStatus}">${text}</span>`;
 }
 
 // ==================== 页面导航 ====================
@@ -120,7 +123,7 @@ async function loadStatusPage() {
 }
 
 function updateStats(stats) {
-    document.getElementById('stat-processed').textContent = stats.totalProcessed || 0;
+    document.getElementById('stat-success').textContent = stats.totalProcessed || stats.totalSuccess || 0;
     document.getElementById('stat-pending').textContent = stats.pendingTasks || 0;
     document.getElementById('stat-processing').textContent = stats.processingTasks || 0;
     document.getElementById('stat-failed').textContent = stats.totalFailed || 0;
@@ -243,6 +246,7 @@ function fillConfigForm(config) {
     document.getElementById('config-minFileSizeKB').value = config.minFileSizeKB || 1024;
     document.getElementById('config-pathTemplate').value = config.pathTemplate || '';
     document.getElementById('config-checkVideoStream').checked = config.checkVideoStream || false;
+    document.getElementById('config-discardFailedFiles').checked = config.discardFailedFiles || false;
     document.getElementById('config-serverPort').value = config.serverPort || 8080;
     document.getElementById('config-webhookPath').value = config.webhookPath || '/webhook';
     document.getElementById('config-defaultCover').value = config.defaultCover || '';
@@ -270,6 +274,7 @@ function getConfigFromForm() {
         minFileSizeKB: parseInt(document.getElementById('config-minFileSizeKB').value) || 1024,
         pathTemplate: document.getElementById('config-pathTemplate').value.trim(),
         checkVideoStream: document.getElementById('config-checkVideoStream').checked,
+        discardFailedFiles: document.getElementById('config-discardFailedFiles').checked,
         serverPort: parseInt(document.getElementById('config-serverPort').value) || 8080,
         webhookPath: document.getElementById('config-webhookPath').value.trim(),
         defaultCover: document.getElementById('config-defaultCover').value.trim(),

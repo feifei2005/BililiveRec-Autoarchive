@@ -26,7 +26,7 @@ type TaskStatus string
 const (
 	StatusPending    TaskStatus = "pending"    // 等待处理
 	StatusProcessing TaskStatus = "processing" // 处理中
-	StatusCompleted  TaskStatus = "completed"  // 已完成
+	StatusSuccess    TaskStatus = "success"    // 已成功
 	StatusFailed     TaskStatus = "failed"     // 处理失败
 	StatusDiscarded  TaskStatus = "discarded"  // 已丢弃
 )
@@ -72,21 +72,21 @@ type Processor interface {
 
 // Config 处理引擎配置
 type Config struct {
-	MaxConcurrent    int                     // 最大并发数
-	InputDir         string                  // 输入目录（录播姬工作目录）
-	OutputRoot       string                  // 输出根目录
-	DiscardDir       string                  // 丢弃目录
-	PathTemplate     string                  // 路径模板
-	CheckVideoStream bool                    // 是否检查视频流
-	MinFileSizeKB    int64                   // 最小文件大小（KB）
-	DateRegex        string                  // 日期解析正则
-	ConflictMode     ConflictMode            // 文件冲突处理模式
-	FFmpeg           ffmpeg.FFmpeg           // FFmpeg 实例
-	Storage          storage.Storage         // 持久化存储实例
-	DefaultCoverPath string                  // 全局默认封面路径
-	DeleteOriginal   bool                    // 处理成功后是否删除原文件
-	ScanInterval     time.Duration           // 扫描间隔
-	Scanner          *scanner.DefaultScanner // Scanner 实例
+	MaxConcurrent      int                     // 最大并发数
+	InputDir           string                  // 输入目录（录播姬工作目录）
+	OutputRoot         string                  // 输出根目录
+	DiscardDir         string                  // 丢弃目录
+	PathTemplate       string                  // 路径模板
+	CheckVideoStream   bool                    // 是否检查视频流
+	MinFileSizeKB      int64                   // 最小文件大小（KB）
+	DiscardFailedFiles bool                    // 处理失败时是否进入丢弃流程
+	ConflictMode       ConflictMode            // 文件冲突处理模式
+	FFmpeg             ffmpeg.FFmpeg           // FFmpeg 实例
+	Storage            storage.Storage         // 持久化存储实例
+	DefaultCoverPath   string                  // 全局默认封面路径
+	DeleteOriginal     bool                    // 处理成功后是否删除原文件
+	ScanInterval       time.Duration           // 扫描间隔
+	Scanner            *scanner.DefaultScanner // Scanner 实例
 }
 
 // ConflictMode 文件冲突处理模式
@@ -119,10 +119,6 @@ func New(cfg Config) (*DefaultProcessor, error) {
 	if cfg.ConflictMode == "" {
 		cfg.ConflictMode = ConflictSkip
 	}
-	if cfg.DateRegex == "" {
-		// 匹配格式: 录制-房间号-YYYYMMDD-HHMMSS，日期在第二个连字符后
-		cfg.DateRegex = `-\d+-(\d{8})-`
-	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 2 // 默认 2 个并发
 	}
@@ -130,8 +126,8 @@ func New(cfg Config) (*DefaultProcessor, error) {
 		cfg.ScanInterval = 5 * time.Minute // 默认 5 分钟扫描一次
 	}
 
-	// 编译日期正则表达式
-	dateRegex, err := regexp.Compile(cfg.DateRegex)
+	// 编译日期正则表达式（匹配录播姬文件名格式: 录制-房间号-YYYYMMDD-HHMMSS）
+	dateRegex, err := regexp.Compile(`-\d+-(\d{8})-`)
 	if err != nil {
 		return nil, fmt.Errorf("invalid date regex: %w", err)
 	}
@@ -322,7 +318,7 @@ func (p *DefaultProcessor) processPath(path string) {
 	// 检查文件是否已经成功处理过
 	if p.storage != nil && p.storage.IsFileProcessed(path) {
 		log.Printf("跳过已处理文件: %s", path)
-		updateTask(StatusCompleted, "", nil, 100)
+		updateTask(StatusSuccess, "", nil, 100)
 		return
 	}
 
@@ -359,9 +355,35 @@ func (p *DefaultProcessor) processPath(path string) {
 	p.mu.Unlock()
 
 	// 处理文件组
+	outputPath, _ := p.buildOutputPath(*group)
 	if err := p.ProcessGroup(*group); err != nil {
+		// 检查是否是丢弃操作
+		if err == ErrDiscarded {
+			log.Printf("文件已丢弃: %s", path)
+			updateTask(StatusDiscarded, "", nil, 100)
+
+			// 记录丢弃
+			if p.storage != nil {
+				p.storage.LogProcessResult(storage.ProcessLog{
+					InputPath: path,
+					Status:    "discarded",
+					Error:     "no valid video stream",
+					StartTime: startTime,
+					EndTime:   time.Now(),
+				})
+			}
+			return
+		}
+
 		log.Printf("处理文件失败: %s, 错误: %v", path, err)
 		updateTask(StatusFailed, "", err, 0)
+
+		// 清理可能存在的不完整输出文件
+		p.cleanupIncompleteOutput(outputPath)
+
+		// 根据配置处理失败的文件
+		p.handleFailedFile(*group)
+
 		// 记录处理失败
 		if p.storage != nil {
 			p.storage.LogProcessResult(storage.ProcessLog{
@@ -376,14 +398,13 @@ func (p *DefaultProcessor) processPath(path string) {
 	}
 
 	// 记录处理成功
-	outputPath, _ := p.buildOutputPath(*group)
-	updateTask(StatusCompleted, outputPath, nil, 100)
+	updateTask(StatusSuccess, outputPath, nil, 100)
 
 	if p.storage != nil {
 		p.storage.LogProcessResult(storage.ProcessLog{
 			InputPath:  path,
 			OutputPath: outputPath,
-			Status:     "completed",
+			Status:     "success",
 			StartTime:  startTime,
 			EndTime:    time.Now(),
 		})
@@ -543,30 +564,47 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 	}
 
 	// 步骤 3: 判断是否为无效文件
+	// 两个独立的过滤条件：
+	// - MinFileSizeKB: 快速丢弃网络不稳定产生的短片段
+	// - CheckVideoStream: 检测视频流是否有效
 	isInvalid := false
 	var invalidReason string
-
-	// 3.1 检查文件大小
 	fileSizeKB := fileInfo.Size() / 1024
+
+	// 3.1 检查文件大小（快速过滤短片段）
 	if p.config.MinFileSizeKB > 0 && fileSizeKB < p.config.MinFileSizeKB {
-		// 文件小于最小大小，需要进一步检查是否有视频流
-		if p.config.CheckVideoStream && p.config.FFmpeg != nil {
-			hasVideo, err := p.config.FFmpeg.HasVideoStream(ctx, group.FLVPath)
-			if err != nil {
-				// 无法检测视频流，可能文件损坏
-				isInvalid = true
-				invalidReason = fmt.Sprintf("failed to check video stream: %v", err)
-			} else if !hasVideo {
-				// 确认无视频流
-				isInvalid = true
-				invalidReason = fmt.Sprintf("file size %d KB < %d KB and no video stream", fileSizeKB, p.config.MinFileSizeKB)
-			}
+		isInvalid = true
+		invalidReason = fmt.Sprintf("file size %d KB < minimum %d KB (short segment)", fileSizeKB, p.config.MinFileSizeKB)
+		log.Printf("文件过小（短片段）: %s (大小: %d KB < 最小 %d KB)", group.FLVPath, fileSizeKB, p.config.MinFileSizeKB)
+	}
+
+	// 3.2 检查视频流有效性（即使文件大小合格也需要检查）
+	if !isInvalid && p.config.CheckVideoStream && p.config.FFmpeg != nil {
+		log.Printf("[processor] 开始检查视频流有效性: %s (大小: %d KB)", group.FLVPath, fileSizeKB)
+		hasVideo, err := p.config.FFmpeg.HasVideoStream(ctx, group.FLVPath)
+		log.Printf("[processor] 视频流检查结果: %s, hasVideo=%v, err=%v", group.FLVPath, hasVideo, err)
+		if err != nil {
+			// 无法检测视频流，可能文件损坏
+			isInvalid = true
+			invalidReason = fmt.Sprintf("failed to check video stream: %v", err)
+			log.Printf("[processor] 视频流检测失败: %s, 错误: %v", group.FLVPath, err)
+		} else if !hasVideo {
+			// 确认无视频流（width 或 height 为 0）
+			isInvalid = true
+			invalidReason = fmt.Sprintf("no valid video stream detected (file size: %d KB)", fileSizeKB)
+			log.Printf("[processor] 文件无有效视频流: %s (大小: %d KB)", group.FLVPath, fileSizeKB)
+		} else {
+			log.Printf("[processor] 文件视频流有效: %s", group.FLVPath)
 		}
 	}
 
 	// 步骤 4: 如果是无效文件，执行丢弃逻辑
 	if isInvalid {
-		return p.discardGroup(group, invalidReason)
+		if err := p.discardGroup(group, invalidReason); err != nil {
+			return err
+		}
+		// 返回特殊错误标记文件已被丢弃
+		return ErrDiscarded
 	}
 
 	// 步骤 5: 解析输出路径
@@ -825,10 +863,52 @@ func (p *DefaultProcessor) copyFile(src, dst string) error {
 	return err
 }
 
+// cleanupIncompleteOutput 清理不完整的输出文件
+// 当处理失败时，删除可能存在的不完整输出文件
+func (p *DefaultProcessor) cleanupIncompleteOutput(outputPath string) {
+	if outputPath == "" {
+		return
+	}
+
+	// 检查输出文件是否存在
+	if _, err := os.Stat(outputPath); err == nil {
+		log.Printf("清理不完整的输出文件: %s", outputPath)
+		if err := os.Remove(outputPath); err != nil {
+			log.Printf("清理输出文件失败: %v", err)
+		} else {
+			log.Printf("已删除不完整的输出文件: %s", outputPath)
+		}
+	}
+
+	// 也清理可能存在的 XML 文件
+	xmlPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".xml"
+	if _, err := os.Stat(xmlPath); err == nil {
+		log.Printf("清理不完整的 XML 文件: %s", xmlPath)
+		if err := os.Remove(xmlPath); err != nil {
+			log.Printf("清理 XML 文件失败: %v", err)
+		}
+	}
+}
+
+// handleFailedFile 处理失败的文件
+// 根据配置决定是保持原位还是进入丢弃流程
+func (p *DefaultProcessor) handleFailedFile(group scanner.FileGroup) {
+	if !p.config.DiscardFailedFiles {
+		log.Printf("处理失败，保持原位: %s", group.FLVPath)
+		return
+	}
+
+	log.Printf("处理失败，执行丢弃逻辑: %s", group.FLVPath)
+	if err := p.discardGroup(group, "processing failed"); err != nil {
+		log.Printf("丢弃失败文件时出错: %v", err)
+	}
+}
+
 // 错误定义
 var (
 	ErrQueueFull    = &ProcessorError{Message: "任务队列已满"}
 	ErrTaskNotFound = &ProcessorError{Message: "任务不存在"}
+	ErrDiscarded    = &ProcessorError{Message: "文件已丢弃"}
 )
 
 // ProcessorError 处理引擎错误

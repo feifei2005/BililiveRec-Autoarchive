@@ -373,7 +373,13 @@ body {
 
 .checkbox-group {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
+}
+
+.checkbox-group .form-hint {
+    flex-basis: 100%;
+    margin-left: 1.5rem; /* 对齐到复选框文字 */
 }
 
 .checkbox-label {

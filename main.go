@@ -197,21 +197,21 @@ func (a *Application) Initialize() error {
 		scanInterval = 5 * time.Minute
 	}
 	a.processor, err = processor.New(processor.Config{
-		MaxConcurrent:    a.config.Processing.MaxConcurrent,
-		InputDir:         a.config.Processing.InputDir,
-		OutputRoot:       a.config.Processing.OutputRoot,
-		DiscardDir:       a.config.Processing.DiscardDir,
-		PathTemplate:     a.config.Rules.PathTemplate,
-		CheckVideoStream: a.config.Processing.CheckVideoStream,
-		MinFileSizeKB:    a.config.Processing.MinFileSizeKB,
-		DateRegex:        a.config.Rules.DateRegex,
-		ConflictMode:     processor.ConflictMode(a.config.Processing.ConflictMode),
-		DeleteOriginal:   a.config.Processing.DeleteOriginal,
-		FFmpeg:           a.ffmpeg,
-		Storage:          a.storage,
-		DefaultCoverPath: a.config.Covers.DefaultCover,
-		Scanner:          a.scanner,
-		ScanInterval:     scanInterval,
+		MaxConcurrent:      a.config.Processing.MaxConcurrent,
+		InputDir:           a.config.Processing.InputDir,
+		OutputRoot:         a.config.Processing.OutputRoot,
+		DiscardDir:         a.config.Processing.DiscardDir,
+		PathTemplate:       a.config.Rules.PathTemplate,
+		CheckVideoStream:   a.config.Processing.CheckVideoStream,
+		MinFileSizeKB:      a.config.Processing.MinFileSizeKB,
+		DiscardFailedFiles: a.config.Processing.DiscardFailedFiles,
+		ConflictMode:       processor.ConflictMode(a.config.Processing.ConflictMode),
+		DeleteOriginal:     a.config.Processing.DeleteOriginal,
+		FFmpeg:             a.ffmpeg,
+		Storage:            a.storage,
+		DefaultCoverPath:   a.config.Covers.DefaultCover,
+		Scanner:            a.scanner,
+		ScanInterval:       scanInterval,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化处理器失败: %w", err)

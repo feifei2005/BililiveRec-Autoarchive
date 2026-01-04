@@ -24,21 +24,21 @@ type ServerConfig struct {
 
 // ProcessingConfig 录制处理配置
 type ProcessingConfig struct {
-	InputDir         string `yaml:"input_dir"`
-	OutputRoot       string `yaml:"output_root"`
-	DiscardDir       string `yaml:"discard_dir"`
-	MaxConcurrent    int    `yaml:"max_concurrent"`
-	MinFileSizeKB    int64  `yaml:"min_file_size_kb"`
-	CheckVideoStream bool   `yaml:"check_video_stream"`
-	DeleteOriginal   bool   `yaml:"delete_original"`
-	ConflictMode     string `yaml:"conflict_mode"`
-	ScanIntervalMin  int    `yaml:"scan_interval_min"`
+	InputDir           string `yaml:"input_dir"`
+	OutputRoot         string `yaml:"output_root"`
+	DiscardDir         string `yaml:"discard_dir"`
+	MaxConcurrent      int    `yaml:"max_concurrent"`
+	MinFileSizeKB      int64  `yaml:"min_file_size_kb"`
+	CheckVideoStream   bool   `yaml:"check_video_stream"`
+	DiscardFailedFiles bool   `yaml:"discard_failed_files"` // 处理失败时是否进入丢弃流程
+	DeleteOriginal     bool   `yaml:"delete_original"`
+	ConflictMode       string `yaml:"conflict_mode"`
+	ScanIntervalMin    int    `yaml:"scan_interval_min"`
 }
 
 // RulesConfig 命名与目录规则配置
 type RulesConfig struct {
 	StreamerNameRegex string `yaml:"streamer_name_regex"`
-	DateRegex         string `yaml:"date_regex"`
 	PathTemplate      string `yaml:"path_template"`
 }
 
@@ -78,19 +78,19 @@ func Default() *Config {
 			WebhookPath: "/webhook",
 		},
 		Processing: ProcessingConfig{
-			InputDir:         "",
-			OutputRoot:       "",
-			DiscardDir:       "",
-			MaxConcurrent:    2,
-			MinFileSizeKB:    1024,
-			CheckVideoStream: true,
-			DeleteOriginal:   false,
-			ConflictMode:     "skip",
-			ScanIntervalMin:  5,
+			InputDir:           "",
+			OutputRoot:         "",
+			DiscardDir:         "",
+			MaxConcurrent:      2,
+			MinFileSizeKB:      1024,
+			CheckVideoStream:   true,
+			DiscardFailedFiles: false, // 默认保留失败文件
+			DeleteOriginal:     false,
+			ConflictMode:       "skip",
+			ScanIntervalMin:    5,
 		},
 		Rules: RulesConfig{
 			StreamerNameRegex: "-([^\\-]+)",
-			DateRegex:         "(\\d{8})",
 			PathTemplate:      "{{.OutputDir}}\\{{.Streamer}}\\{{.Year}}\\{{.Month}}\\{{.Day}}",
 		},
 		Covers: CoversConfig{

@@ -10,13 +10,38 @@ server:
 processing:
   input_dir: "C:\\Videos\\Recordings"       # 录制文件输入目录（录播姬工作目录）
   output_root: "D:\\Archive\\Bilibili"      # 整理后的输出根目录
-  discard_dir: "D:\\Archive\\Discarded"     # 无效文件存放目录（留空则直接删除）
+  
+  # 无效文件处理（回收站机制）
+  # - 配置了目录：无效文件会被移动到该目录（按主播名分子目录）
+  # - 留空：无效文件会被直接删除
+  discard_dir: "D:\\Archive\\Discarded"
+  
   max_concurrent: 2                         # 最大并发处理数
-  min_file_size_kb: 1024                    # 最小文件大小（KB），小于此值的文件将被检查
-  check_video_stream: true                  # 是否使用 ffprobe 检查视频流有效性
+  
+  # ========== 无效文件过滤（两个独立条件，同时生效）==========
+  
+  # 条件1: 最小文件大小阈值（KB）
+  # 用于快速丢弃网络不稳定导致的短片段
+  # 小于此值的文件会被直接丢弃（不进行视频流检测）
+  # 设为 0 则禁用此过滤
+  min_file_size_kb: 1024
+  
+  # 条件2: 视频流有效性检测（解决 0 字节 MKV 问题）
+  # 开启后，会在转封装前使用 ffprobe 检查文件是否包含有效视频流
+  # 无效的文件会被移动到 discard_dir 或直接删除
+  # 注意：只有通过了文件大小检测的文件才会进行此检测
+  check_video_stream: true
+  
   delete_original: false                    # 处理成功后是否删除原文件
   conflict_mode: "skip"                     # 文件名冲突处理模式：skip（跳过）、overwrite（覆盖）、rename（重命名）
   scan_interval_min: 5                      # 定时扫描间隔（分钟）
+  
+  # 处理失败的文件处理方式
+  # - false（默认）：保持原位，失败文件保留在原目录
+  # - true：进入丢弃流程
+  #   - 如果配置了 discard_dir：移动到丢弃目录
+  #   - 如果未配置 discard_dir：直接删除源文件
+  discard_failed_files: false
 
 # 命名与目录规则
 rules:
@@ -24,10 +49,6 @@ rules:
   # 示例文件名: 20231225-某主播名-直播标题.flv
   # 此正则会匹配第一个 - 后的字符作为主播名
   streamer_name_regex: "-([^\\-]+)"
-  
-  # 日期解析正则表达式
-  # 匹配 8 位数字格式的日期，如 20231225
-  date_regex: "(\\d{8})"
   
   # 输出路径模板
   # 支持的变量: {{.OutputDir}}, {{.Streamer}}, {{.Year}}, {{.Month}}, {{.Day}}

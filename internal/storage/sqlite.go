@@ -530,11 +530,11 @@ func (s *SQLiteStorage) scanProcessLogs(rows *sql.Rows) ([]*ProcessLog, error) {
 }
 
 // IsFileProcessed 检查文件是否已成功处理过
-// 通过查询 process_logs 表中是否存在该输入路径且状态为 completed 的记录
+// 通过查询 process_logs 表中是否存在该输入路径且状态为 success 的记录
 func (s *SQLiteStorage) IsFileProcessed(inputPath string) bool {
 	query := `
 	SELECT COUNT(*) FROM process_logs
-	WHERE input_path = ? AND status = 'completed'
+	WHERE input_path = ? AND status = 'success'
 	`
 
 	var count int

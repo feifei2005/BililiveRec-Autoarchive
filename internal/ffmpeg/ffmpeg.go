@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -226,16 +228,16 @@ func (f *DefaultFFmpeg) Probe(ctx context.Context, path string) (*MediaInfo, err
 	return info, nil
 }
 
-// HasVideoStream 检查文件是否包含视频流
-// 使用 ffprobe 快速检测文件中是否存在视频流
+// HasVideoStream 检查文件是否包含有效的视频流
+// 使用 ffprobe 检测文件中是否存在有效的视频流（width 和 height 都大于 0）
 // 此方法用于过滤无效的录制文件（如纯音频或损坏的文件）
 func (f *DefaultFFmpeg) HasVideoStream(ctx context.Context, path string) (bool, error) {
-	// 使用 ffprobe 只获取流信息，更快速
+	// 检查 width 和 height，确保视频流有有效的尺寸信息
 	args := []string{
 		"-v", "quiet",
-		"-select_streams", "v", // 只选择视频流
-		"-show_entries", "stream=codec_type", // 只获取 codec_type
-		"-of", "csv=p=0", // 简单输出格式
+		"-select_streams", "v:0", // 只选择第一个视频流
+		"-show_entries", "stream=width,height", // 获取宽高信息
+		"-of", "csv=p=0", // 简单输出格式，输出为 "width,height"
 		path,
 	}
 
@@ -248,12 +250,38 @@ func (f *DefaultFFmpeg) HasVideoStream(ctx context.Context, path string) (bool, 
 
 	err := cmd.Run()
 	if err != nil {
+		log.Printf("[ffmpeg] HasVideoStream ffprobe failed for %s: %v, stderr: %s", path, err, stderr.String())
 		return false, fmt.Errorf("ffprobe failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	// 如果输出包含 "video"，则存在视频流
+	// 解析输出，格式应为 "width,height"，例如 "1920,1080"
 	output := strings.TrimSpace(stdout.String())
-	return strings.Contains(output, "video"), nil
+	log.Printf("[ffmpeg] HasVideoStream ffprobe output for %s: %q", path, output)
+
+	if output == "" {
+		log.Printf("[ffmpeg] HasVideoStream: no video stream found in %s", path)
+		return false, nil
+	}
+
+	// 解析宽高
+	parts := strings.Split(output, ",")
+	if len(parts) != 2 {
+		log.Printf("[ffmpeg] HasVideoStream: invalid output format for %s: %q", path, output)
+		return false, nil
+	}
+
+	width, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	height, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+
+	if err1 != nil || err2 != nil {
+		log.Printf("[ffmpeg] HasVideoStream: failed to parse dimensions for %s: width=%q height=%q", path, parts[0], parts[1])
+		return false, nil
+	}
+
+	hasValidVideo := width > 0 && height > 0
+	log.Printf("[ffmpeg] HasVideoStream: %s has valid video stream: %v (width=%d, height=%d)", path, hasValidVideo, width, height)
+
+	return hasValidVideo, nil
 }
 
 // Version 获取 FFmpeg 版本信息

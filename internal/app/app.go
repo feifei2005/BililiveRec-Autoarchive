@@ -78,19 +78,20 @@ func (a *App) Shutdown(ctx context.Context) {
 
 // ConfigData 配置数据传输对象
 type ConfigData struct {
-	InputDir         string   `json:"inputDir"`
-	OutputRoot       string   `json:"outputRoot"`
-	DiscardDir       string   `json:"discardDir"`
-	MaxConcurrent    int      `json:"maxConcurrent"`
-	MinFileSizeKB    int64    `json:"minFileSizeKB"`
-	CheckVideoStream bool     `json:"checkVideoStream"`
-	ServerPort       int      `json:"serverPort"`
-	WebhookPath      string   `json:"webhookPath"`
-	FFmpegPath       string   `json:"ffmpegPath"`
-	FFprobePath      string   `json:"ffprobePath"`
-	CustomArgs       []string `json:"customArgs"`
-	DefaultCover     string   `json:"defaultCover"`
-	PathTemplate     string   `json:"pathTemplate"`
+	InputDir           string   `json:"inputDir"`
+	OutputRoot         string   `json:"outputRoot"`
+	DiscardDir         string   `json:"discardDir"`
+	MaxConcurrent      int      `json:"maxConcurrent"`
+	MinFileSizeKB      int64    `json:"minFileSizeKB"`
+	CheckVideoStream   bool     `json:"checkVideoStream"`
+	DiscardFailedFiles bool     `json:"discardFailedFiles"` // 处理失败时是否进入丢弃流程
+	ServerPort         int      `json:"serverPort"`
+	WebhookPath        string   `json:"webhookPath"`
+	FFmpegPath         string   `json:"ffmpegPath"`
+	FFprobePath        string   `json:"ffprobePath"`
+	CustomArgs         []string `json:"customArgs"`
+	DefaultCover       string   `json:"defaultCover"`
+	PathTemplate       string   `json:"pathTemplate"`
 }
 
 // GetConfig 获取当前配置
@@ -100,19 +101,20 @@ func (a *App) GetConfig() ConfigData {
 	}
 
 	return ConfigData{
-		InputDir:         a.config.Processing.InputDir,
-		OutputRoot:       a.config.Processing.OutputRoot,
-		DiscardDir:       a.config.Processing.DiscardDir,
-		MaxConcurrent:    a.config.Processing.MaxConcurrent,
-		MinFileSizeKB:    a.config.Processing.MinFileSizeKB,
-		CheckVideoStream: a.config.Processing.CheckVideoStream,
-		ServerPort:       a.config.Server.Port,
-		WebhookPath:      a.config.Server.WebhookPath,
-		FFmpegPath:       a.config.FFmpeg.Path,
-		FFprobePath:      a.config.FFmpeg.FFprobePath,
-		CustomArgs:       a.config.FFmpeg.CustomArgs,
-		DefaultCover:     a.config.Covers.DefaultCover,
-		PathTemplate:     a.config.Rules.PathTemplate,
+		InputDir:           a.config.Processing.InputDir,
+		OutputRoot:         a.config.Processing.OutputRoot,
+		DiscardDir:         a.config.Processing.DiscardDir,
+		MaxConcurrent:      a.config.Processing.MaxConcurrent,
+		MinFileSizeKB:      a.config.Processing.MinFileSizeKB,
+		CheckVideoStream:   a.config.Processing.CheckVideoStream,
+		DiscardFailedFiles: a.config.Processing.DiscardFailedFiles,
+		ServerPort:         a.config.Server.Port,
+		WebhookPath:        a.config.Server.WebhookPath,
+		FFmpegPath:         a.config.FFmpeg.Path,
+		FFprobePath:        a.config.FFmpeg.FFprobePath,
+		CustomArgs:         a.config.FFmpeg.CustomArgs,
+		DefaultCover:       a.config.Covers.DefaultCover,
+		PathTemplate:       a.config.Rules.PathTemplate,
 	}
 }
 
@@ -129,6 +131,7 @@ func (a *App) SaveConfig(data ConfigData) error {
 	a.config.Processing.MaxConcurrent = data.MaxConcurrent
 	a.config.Processing.MinFileSizeKB = data.MinFileSizeKB
 	a.config.Processing.CheckVideoStream = data.CheckVideoStream
+	a.config.Processing.DiscardFailedFiles = data.DiscardFailedFiles
 	a.config.Server.Port = data.ServerPort
 	a.config.Server.WebhookPath = data.WebhookPath
 	a.config.FFmpeg.Path = data.FFmpegPath
@@ -359,7 +362,7 @@ func (a *App) GetStats() Stats {
 		tasks := a.processor.Tasks()
 		for _, task := range tasks {
 			switch task.Status {
-			case processor.StatusCompleted:
+			case processor.StatusSuccess:
 				stats.TotalProcessed++
 			case processor.StatusFailed:
 				stats.TotalFailed++
