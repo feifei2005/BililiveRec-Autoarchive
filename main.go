@@ -24,6 +24,7 @@ import (
 	"github.com/user/bililive-recorder-autoarchive/internal/processor"
 	"github.com/user/bililive-recorder-autoarchive/internal/scanner"
 	"github.com/user/bililive-recorder-autoarchive/internal/storage"
+	"github.com/user/bililive-recorder-autoarchive/internal/transcoder"
 	"github.com/user/bililive-recorder-autoarchive/internal/tray"
 	"github.com/user/bililive-recorder-autoarchive/internal/webhook"
 )
@@ -39,15 +40,16 @@ var (
 
 // Application 应用程序结构体，整合所有模块
 type Application struct {
-	config    *config.Config
-	storage   storage.Storage
-	scanner   *scanner.DefaultScanner
-	ffmpeg    ffmpeg.FFmpeg
-	processor *processor.DefaultProcessor
-	webhook   *webhook.Server
-	autostart *autostart.AutoStart
-	app       *app.App
-	tray      tray.Tray
+	config     *config.Config
+	storage    storage.Storage
+	scanner    *scanner.DefaultScanner
+	ffmpeg     ffmpeg.FFmpeg
+	processor  *processor.DefaultProcessor
+	webhook    *webhook.Server
+	autostart  *autostart.AutoStart
+	transcoder *transcoder.Transcoder
+	app        *app.App
+	tray       tray.Tray
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -242,7 +244,16 @@ func (a *Application) Initialize() error {
 		log.Printf("警告: 初始化开机自启动失败: %v", err)
 	}
 
-	// 8. 初始化 Wails 应用绑定
+	// 8. 初始化转码器
+	log.Println("初始化转码器...")
+	a.transcoder = transcoder.New(transcoder.Config{
+		FFmpegPath:  a.config.FFmpeg.Path,
+		FFprobePath: a.config.FFmpeg.FFprobePath,
+		MaxWorkers:  1, // 默认单线程转码
+	})
+	log.Println("转码器已创建")
+
+	// 9. 初始化 Wails 应用绑定
 	log.Println("初始化应用绑定...")
 	a.app = app.NewApp()
 	a.app.SetConfig(a.config)
@@ -252,12 +263,26 @@ func (a *Application) Initialize() error {
 		a.app.SetAutostart(a.autostart)
 	}
 
+	// 设置转码器
+	a.app.SetTranscoder(a.transcoder)
+	log.Println("转码器已设置到 App")
+
+	// 设置 Webhook 服务器的 App 引用（用于转码 API）
+	a.webhook.SetApp(a.app)
+	log.Println("Webhook 服务器已关联 App")
+
 	// 设置回调函数
 	a.app.SetCallbacks(
 		func() { a.handleQuit() },       // onQuit
 		func() { a.triggerScan() },      // onScanNow
 		func() { a.handleShowWindow() }, // onShowWindow
 		func() { a.handleHideWindow() }, // onHideWindow
+	)
+
+	// 设置关闭相关的回调函数
+	a.app.SetShutdownCallbacks(
+		func() { a.handleShutdownNow() },                        // onShutdownNow
+		func(cb func()) { a.handleShutdownAfterCompletion(cb) }, // onShutdownAfterCompletion
 	)
 
 	return nil
@@ -271,6 +296,12 @@ func (a *Application) StartServices() error {
 	if err := a.processor.Start(a.ctx); err != nil {
 		return fmt.Errorf("启动处理器失败: %w", err)
 	}
+
+	// 启动转码器
+	if err := a.transcoder.Start(a.ctx); err != nil {
+		return fmt.Errorf("启动转码器失败: %w", err)
+	}
+	log.Println("转码器已启动")
 
 	// 启动 Webhook 服务器（非阻塞）
 	go func() {
@@ -447,10 +478,39 @@ func (a *Application) handleToggleAutoRun() {
 
 // handleQuit 退出应用
 func (a *Application) handleQuit() {
-	log.Println("前端请���退出")
+	log.Println("前端请求退出")
 	if a.wailsCtx != nil {
 		wailsRuntime.Quit(a.wailsCtx)
 	}
+}
+
+// handleShutdownNow 立即关闭，停止所有任务
+func (a *Application) handleShutdownNow() {
+	log.Println("[SHUTDOWN] 立即关闭，停止所有任务")
+	// 停止处理器（会停止所有正在进行的FFmpeg进程）
+	if a.processor != nil {
+		a.processor.StopNow()
+	}
+	// 触发应用退出
+	a.handleQuit()
+}
+
+// handleShutdownAfterCompletion 等待任务完成后关闭
+func (a *Application) handleShutdownAfterCompletion(onComplete func()) {
+	log.Println("[SHUTDOWN] 等待任务完成后关闭")
+	go func() {
+		if a.processor != nil {
+			// 停止接收新任务
+			a.processor.StopGracefully()
+			// 等待所有正在进行的任务完成（最多等待30分钟）
+			a.processor.WaitForCompletion(30 * time.Minute)
+		}
+		log.Println("[SHUTDOWN] 所有任务已完成")
+		// 调用完成回调
+		if onComplete != nil {
+			onComplete()
+		}
+	}()
 }
 
 // triggerScan 触发扫描
@@ -508,6 +568,13 @@ func (a *Application) Shutdown() {
 		log.Println("[SHUTDOWN] 停止处理器...")
 		a.processor.Stop()
 		log.Println("[SHUTDOWN] 处理器已停止")
+	}
+
+	// 停止转码器
+	if a.transcoder != nil {
+		log.Println("[SHUTDOWN] 停止转码器...")
+		a.transcoder.Stop()
+		log.Println("[SHUTDOWN] 转码器已停止")
 	}
 
 	// 关闭数据库

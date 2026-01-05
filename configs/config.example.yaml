@@ -74,5 +74,19 @@ ffmpeg:
     - "-c"
     - "copy"
 
+# 转码设置
+transcode:
+  # 默认输出格式 (mp4, mkv)
+  default_format: mp4
+  # 默认转码参数（FFmpeg 参数）
+  # 示例: H.264 编码，中等预设，CRF 23，AAC 音频 192kbps
+  default_params: "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k"
+  # 最大并发转码任务数
+  max_concurrent: 1
+  # 输出目录（留空则输出到源文件同目录）
+  output_dir: ""
+  # 转码完成后是否删除源文件
+  delete_source: false
+
 # 注意：数据库文件 (data.db) 默认保存在程序运行目录
 # 日志默认输出到控制台

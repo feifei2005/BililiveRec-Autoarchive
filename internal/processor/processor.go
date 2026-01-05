@@ -111,6 +111,12 @@ type DefaultProcessor struct {
 	pendingPaths sync.Map           // 用于任务去重，存储正在处理的文件路径
 	ctx          context.Context    // 上下文，用于取消
 	cancel       context.CancelFunc // 取消函数
+
+	// 用于跟踪活动任务和等待完成
+	activeTasksMu sync.RWMutex
+	activeTasks   int           // 当前正在处理的任务数
+	taskDone      chan struct{} // 当任务完成时发送信号
+	stopped       bool          // 是否已停止
 }
 
 // New 创建新的处理引擎实例
@@ -139,6 +145,7 @@ func New(cfg Config) (*DefaultProcessor, error) {
 		done:      make(chan struct{}),
 		dateRegex: dateRegex,
 		storage:   cfg.Storage,
+		taskDone:  make(chan struct{}, 100), // 缓冲通道用于任务完成通知
 	}, nil
 }
 
@@ -283,8 +290,26 @@ func generateTaskID(path string) string {
 
 // processPath 处理单个文件路径
 func (p *DefaultProcessor) processPath(path string) {
-	// 处理完成后从去重 map 中移除
-	defer p.pendingPaths.Delete(path)
+	// 增加活动任务计数
+	p.activeTasksMu.Lock()
+	p.activeTasks++
+	p.activeTasksMu.Unlock()
+
+	// 处理完成后减少活动任务计数并发送完成信号
+	defer func() {
+		p.activeTasksMu.Lock()
+		p.activeTasks--
+		p.activeTasksMu.Unlock()
+
+		// 非阻塞发送完成信号
+		select {
+		case p.taskDone <- struct{}{}:
+		default:
+		}
+
+		// 从去重 map 中移除
+		p.pendingPaths.Delete(path)
+	}()
 
 	startTime := time.Now()
 	log.Printf("开始处理文件: %s", path)
@@ -902,6 +927,145 @@ func (p *DefaultProcessor) handleFailedFile(group scanner.FileGroup) {
 	if err := p.discardGroup(group, "processing failed"); err != nil {
 		log.Printf("丢弃失败文件时出错: %v", err)
 	}
+}
+
+// ================== 任务状态查询方法 ==================
+
+// GetActiveTasksCount 返回正在处理中的任务数量
+func (p *DefaultProcessor) GetActiveTasksCount() int {
+	p.activeTasksMu.RLock()
+	defer p.activeTasksMu.RUnlock()
+	return p.activeTasks
+}
+
+// GetPendingTasksCount 返回待处理的任务数量（队列中等待的任务）
+func (p *DefaultProcessor) GetPendingTasksCount() int {
+	return len(p.pathQueue)
+}
+
+// GetTasksByStatus 返回按状态分类的任务数量
+func (p *DefaultProcessor) GetTasksByStatus() map[TaskStatus]int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	counts := make(map[TaskStatus]int)
+	for _, task := range p.tasks {
+		counts[task.Status]++
+	}
+	return counts
+}
+
+// IsStopped 返回处理器是否已停止
+func (p *DefaultProcessor) IsStopped() bool {
+	p.activeTasksMu.RLock()
+	defer p.activeTasksMu.RUnlock()
+	return p.stopped
+}
+
+// ================== 优雅关闭方法 ==================
+
+// StopGracefully 优雅停止处理引擎
+// 立即停止接收新任务，但允许正在进行的任务完成
+func (p *DefaultProcessor) StopGracefully() {
+	log.Println("开始优雅停止处理引擎...")
+
+	p.activeTasksMu.Lock()
+	p.stopped = true
+	p.activeTasksMu.Unlock()
+
+	// 取消上下文（通知定时扫描等后台任务退出）
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	// 关闭 done 通道
+	select {
+	case <-p.done:
+		// 已关闭
+	default:
+		close(p.done)
+	}
+}
+
+// WaitForCompletion 等待所有正在进行的任务完成
+// 返回 true 表示所有任务已完成，false 表示超时
+func (p *DefaultProcessor) WaitForCompletion(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		p.activeTasksMu.RLock()
+		active := p.activeTasks
+		p.activeTasksMu.RUnlock()
+
+		if active == 0 {
+			log.Println("所有任务已完成")
+			return true
+		}
+
+		if time.Now().After(deadline) {
+			log.Printf("等待任务完成超时，仍有 %d 个任务在进行中", active)
+			return false
+		}
+
+		// 等待任务完成信号或超时
+		select {
+		case <-p.taskDone:
+			// 有任务完成，继续检查
+		case <-time.After(100 * time.Millisecond):
+			// 定期检查
+		}
+	}
+}
+
+// StopNow 立即停止所有任务（强制终止）
+// 这会取消所有正在进行的 FFmpeg 进程
+func (p *DefaultProcessor) StopNow() error {
+	log.Println("立即停止处理引擎（强制终止）...")
+
+	p.activeTasksMu.Lock()
+	p.stopped = true
+	p.activeTasksMu.Unlock()
+
+	// 取消上下文，这会导致所有使用该上下文的操作被取消
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	// 关闭 done 通道
+	select {
+	case <-p.done:
+		// 已关闭
+	default:
+		close(p.done)
+	}
+
+	// 关闭队列通道
+	select {
+	case _, ok := <-p.pathQueue:
+		if ok {
+			// 尝试清空队列
+			for range p.pathQueue {
+			}
+		}
+	default:
+		close(p.pathQueue)
+	}
+
+	// 等待 workers 退出，带超时
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("所有 workers 已强制退出")
+	case <-time.After(3 * time.Second):
+		log.Println("警告: 等待 workers 强制退出超时")
+	}
+
+	return nil
 }
 
 // 错误定义

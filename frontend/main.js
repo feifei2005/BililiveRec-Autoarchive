@@ -2,7 +2,8 @@
 const state = {
     currentPage: 'status',
     refreshInterval: null,
-    taskFilter: 'all'
+    taskFilter: 'all',
+    isShuttingDown: false
 };
 
 // ==================== 工具函数 ====================
@@ -40,6 +41,14 @@ function formatPath(path) {
     if (!path) return '--';
     const parts = path.split(/[\\/]/);
     return parts[parts.length - 1];
+}
+
+// HTML 转义，防止 XSS
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // 获取状态徽章 HTML
@@ -100,6 +109,9 @@ function switchPage(page) {
             break;
         case 'logs':
             loadLogsPage();
+            break;
+        case 'transcode':
+            loadTranscodePage();
             break;
     }
 }
@@ -177,48 +189,71 @@ document.getElementById('btn-scan-now')?.addEventListener('click', async () => {
 async function loadTasksPage() {
     try {
         const tasks = await window.go.app.App.GetTasks();
-        renderTaskTable(tasks);
+        renderTasks(tasks);
     } catch (error) {
         console.error('加载任务列表失败:', error);
         showToast('加载任务失败', 'error');
     }
 }
 
-function renderTaskTable(tasks) {
-    const tbody = document.getElementById('task-table-body');
+// 标准化任务状态
+function normalizeTaskStatus(status) {
+    const s = status.toLowerCase();
+    if (s === 'completed') return 'success';
+    return s;
+}
+
+function renderTasks(tasks) {
+    // 按状态分组
+    const grouped = {
+        pending: tasks.filter(t => normalizeTaskStatus(t.status) === 'pending'),
+        processing: tasks.filter(t => normalizeTaskStatus(t.status) === 'processing'),
+        success: tasks.filter(t => normalizeTaskStatus(t.status) === 'success'),
+        failed: tasks.filter(t => {
+            const s = normalizeTaskStatus(t.status);
+            return s === 'failed' || s === 'discarded';
+        })
+    };
     
-    // 应用过滤
-    let filteredTasks = tasks;
-    if (state.taskFilter !== 'all') {
-        filteredTasks = tasks.filter(t => t.status.toLowerCase() === state.taskFilter);
-    }
+    // 更新计数
+    document.getElementById('pending-count').textContent = grouped.pending.length;
+    document.getElementById('processing-count').textContent = grouped.processing.length;
+    document.getElementById('success-count').textContent = grouped.success.length;
+    document.getElementById('failed-count').textContent = grouped.failed.length;
     
-    if (filteredTasks.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无任务</td></tr>';
+    // 渲染每个分区
+    renderTaskList('pending-tasks', grouped.pending);
+    renderTaskList('processing-tasks', grouped.processing);
+    renderTaskList('success-tasks', grouped.success);
+    renderTaskList('failed-tasks', grouped.failed);
+}
+
+function renderTaskList(containerId, tasks) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    if (tasks.length === 0) {
+        container.innerHTML = '<p class="empty-message">暂无任务</p>';
         return;
     }
     
-    const html = filteredTasks.map(task => `
-        <tr>
-            <td>${getStatusBadge(task.status)}</td>
-            <td>${task.streamerName || '--'}</td>
-            <td title="${task.inputPath}">${formatPath(task.inputPath)}</td>
-            <td>
-                ${task.progress > 0 ? `${task.progress.toFixed(1)}%` : '--'}
-                ${task.error ? `<br><span style="color: var(--error-color); font-size: 0.75rem;">${task.error}</span>` : ''}
-            </td>
-            <td>${formatTime(task.createdAt)}</td>
-        </tr>
+    container.innerHTML = tasks.map(task => `
+        <div class="task-item ${normalizeTaskStatus(task.status)}">
+            <div class="task-info">
+                <span class="task-name">${escapeHtml(task.streamerName || formatPath(task.inputPath))}</span>
+                <span class="task-time">${formatTime(task.createdAt)}</span>
+            </div>
+            <div class="task-file" title="${escapeHtml(task.inputPath)}">${escapeHtml(formatPath(task.inputPath))}</div>
+            ${normalizeTaskStatus(task.status) === 'processing' && task.progress > 0 ? `
+                <div class="task-progress">
+                    <div class="progress-bar" style="width: ${task.progress}%"></div>
+                    <span class="progress-text">${task.progress.toFixed(1)}%</span>
+                </div>
+            ` : ''}
+            ${task.error ? `<div class="task-error">${escapeHtml(task.error)}</div>` : ''}
+        </div>
     `).join('');
-    
-    tbody.innerHTML = html;
 }
-
-// 任务过滤器
-document.getElementById('task-filter')?.addEventListener('change', (e) => {
-    state.taskFilter = e.target.value;
-    loadTasksPage();
-});
 
 // ==================== 配置页面 ====================
 
@@ -341,6 +376,392 @@ document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
     showToast('日志已刷新', 'info');
 });
 
+// ==================== 转码功能 ====================
+
+// 转码状态
+const transcodeState = {
+    scannedVideos: [],
+    isPolling: false
+};
+
+// FFmpeg 预设参数
+const ffmpegPresets = {
+    'h264-high': '-c:v libx264 -preset slow -crf 18 -c:a aac -b:a 256k',
+    'h264-medium': '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k',
+    'h265-medium': '-c:v libx265 -preset medium -crf 28 -c:a aac -b:a 192k',
+    'av1-medium': '-c:v libsvtav1 -preset 6 -crf 30 -c:a libopus -b:a 128k'
+};
+
+// 默认 FFmpeg 参数
+const DEFAULT_FFMPEG_PARAMS = '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k';
+
+// 保存 FFmpeg 参数到 localStorage
+function saveFFmpegParams(params) {
+    localStorage.setItem('ffmpegParams', params);
+}
+
+// 从 localStorage 加载 FFmpeg 参数
+function loadFFmpegParams() {
+    return localStorage.getItem('ffmpegParams') || DEFAULT_FFMPEG_PARAMS;
+}
+
+// 加载转码页面
+async function loadTranscodePage() {
+    // 恢复保存的 FFmpeg 参数
+    const paramsInput = document.getElementById('ffmpeg-params');
+    if (paramsInput && !paramsInput.value) {
+        paramsInput.value = loadFFmpegParams();
+    }
+    
+    // 加载转码任务列表
+    await loadTranscodeTasks();
+}
+
+// 选择文件夹
+async function selectTranscodeFolder() {
+    try {
+        const result = await window.go.app.App.SelectFolder();
+        if (result) {
+            document.getElementById('transcode-folder').value = result;
+        }
+    } catch (error) {
+        console.error('选择文件夹失败:', error);
+        showToast('选择文件夹失败', 'error');
+    }
+}
+
+// 扫描文件夹
+async function scanTranscodeFolder() {
+    const folder = document.getElementById('transcode-folder').value;
+    if (!folder) {
+        showToast('请先选择文件夹', 'warning');
+        return;
+    }
+    
+    try {
+        showToast('正在扫描...', 'info');
+        const files = await window.go.app.App.ScanVideoFolder(folder);
+        transcodeState.scannedVideos = files || [];
+        renderVideoList(transcodeState.scannedVideos);
+        showToast(`扫描完成，找到 ${transcodeState.scannedVideos.length} 个视频文件`, 'success');
+    } catch (error) {
+        console.error('扫描文件夹失败:', error);
+        showToast(`扫描失败: ${error}`, 'error');
+    }
+}
+
+// 渲染视频列表
+function renderVideoList(files) {
+    const container = document.getElementById('video-list');
+    const countBadge = document.getElementById('video-count');
+    
+    countBadge.textContent = files.length;
+    
+    if (files.length === 0) {
+        container.innerHTML = '<div class="empty-state">未找到视频文件</div>';
+        return;
+    }
+    
+    const html = files.map((f, index) => `
+        <div class="video-item">
+            <input type="checkbox" id="video-${index}" checked data-path="${escapeHtml(f.path)}">
+            <label for="video-${index}" class="video-item-content">
+                <span class="filename">${escapeHtml(f.name)}</span>
+                <span class="video-info">
+                    <span class="duration">${f.duration || '--'}</span>
+                    <span class="resolution">${f.resolution || '--'}</span>
+                    <span class="cover-status ${f.hasCover ? 'has-cover' : 'no-cover'}">
+                        ${f.hasCover ? '有封面' : '无封面'}
+                    </span>
+                </span>
+            </label>
+        </div>
+    `).join('');
+    
+    container.innerHTML = html;
+}
+
+// 全选/取消全选
+function toggleSelectAllVideos() {
+    const selectAll = document.getElementById('select-all-videos');
+    const checkboxes = document.querySelectorAll('#video-list input[type="checkbox"]');
+    checkboxes.forEach(cb => cb.checked = selectAll.checked);
+}
+
+// 开始转码
+async function startTranscode() {
+    const selectedFiles = [...document.querySelectorAll('#video-list input:checked')]
+        .map(el => el.dataset.path)
+        .filter(Boolean);
+    
+    if (selectedFiles.length === 0) {
+        showToast('请选择要转码的视频', 'warning');
+        return;
+    }
+    
+    const params = document.getElementById('ffmpeg-params').value.trim();
+    const format = document.getElementById('output-format').value;
+    const preserveCover = document.getElementById('preserve-cover').checked;
+    const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
+    
+    // 保存 FFmpeg 参数到 localStorage
+    saveFFmpegParams(params);
+    
+    try {
+        showToast('正在添加转码任务...', 'info');
+        const result = await window.go.app.App.StartTranscode({
+            files: selectedFiles,
+            params: params,
+            format: format,
+            preserveCover: preserveCover,
+            deleteSourceOnSuccess: deleteSourceOnSuccess
+        });
+        
+        if (result.success) {
+            showToast(`已添加 ${result.taskCount} 个转码任务`, 'success');
+            document.getElementById('btn-cancel-transcode').disabled = false;
+            startTranscodePolling();
+        } else {
+            showToast(`添加任务失败: ${result.error}`, 'error');
+        }
+    } catch (error) {
+        console.error('开始转码失败:', error);
+        showToast(`开始转码失败: ${error}`, 'error');
+    }
+}
+
+// 取消转码
+async function cancelTranscode() {
+    try {
+        await window.go.app.App.CancelAllTranscode();
+        showToast('已取消所有转码任务', 'info');
+        document.getElementById('btn-cancel-transcode').disabled = true;
+        await loadTranscodeTasks();
+    } catch (error) {
+        console.error('取消转码失败:', error);
+        showToast(`取消失败: ${error}`, 'error');
+    }
+}
+
+// 取消单个任务
+async function cancelTranscodeTask(taskId) {
+    try {
+        await window.go.app.App.CancelTranscodeTask(taskId);
+        showToast('已取消任务', 'info');
+        await loadTranscodeTasks();
+    } catch (error) {
+        console.error('取消任务失败:', error);
+        showToast(`取消失败: ${error}`, 'error');
+    }
+}
+
+// 加载转码任务列表
+async function loadTranscodeTasks() {
+    try {
+        const tasks = await window.go.app.App.GetTranscodeTasks();
+        renderTranscodeTaskList(tasks || []);
+        
+        // 检查是否有进行中的任务
+        const hasActiveTasks = tasks && tasks.some(t =>
+            t.status === 'processing' || t.status === 'pending'
+        );
+        document.getElementById('btn-cancel-transcode').disabled = !hasActiveTasks;
+        
+        return hasActiveTasks;
+    } catch (error) {
+        console.error('加载转码任务失败:', error);
+        return false;
+    }
+}
+
+// 渲染转码任务列表
+function renderTranscodeTaskList(tasks) {
+    const container = document.getElementById('transcode-task-list');
+    const countBadge = document.getElementById('transcode-task-count');
+    
+    countBadge.textContent = tasks.length;
+    
+    if (tasks.length === 0) {
+        container.innerHTML = '<div class="empty-state">暂无转码任务</div>';
+        return;
+    }
+    
+    const html = tasks.map(t => {
+        const statusClass = getTranscodeStatusClass(t.status);
+        const statusText = getTranscodeStatusText(t.status);
+        
+        // 格式化错误显示
+        let errorHtml = '';
+        if (t.error && t.status === 'failed') {
+            errorHtml = `
+                <details class="task-error-details">
+                    <summary class="task-error-summary">
+                        <span class="error-icon">⚠️</span>
+                        查看错误详情
+                    </summary>
+                    <pre class="ffmpeg-output">${escapeHtml(t.error)}</pre>
+                </details>
+            `;
+        } else if (t.error) {
+            errorHtml = `<div class="task-error-msg">${escapeHtml(t.error)}</div>`;
+        }
+        
+        return `
+            <div class="transcode-task-item ${statusClass}">
+                <div class="task-header">
+                    <span class="task-filename">${escapeHtml(formatPath(t.inputFile))}</span>
+                    <span class="task-status-badge ${statusClass}">${statusText}</span>
+                </div>
+                ${t.status === 'processing' ? `
+                    <div class="task-progress-container">
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" style="width: ${t.progress}%"></div>
+                        </div>
+                        <span class="progress-text">${t.progress.toFixed(1)}%</span>
+                    </div>
+                ` : ''}
+                ${errorHtml}
+                <div class="task-actions">
+                    ${(t.status === 'processing' || t.status === 'pending') ?
+                        `<button class="btn btn-sm btn-danger" onclick="cancelTranscodeTask('${t.id}')">取消</button>`
+                        : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    container.innerHTML = html;
+}
+
+// 获取转码状态样式类
+function getTranscodeStatusClass(status) {
+    const classMap = {
+        'pending': 'status-pending',
+        'processing': 'status-processing',
+        'success': 'status-success',
+        'failed': 'status-failed',
+        'cancelled': 'status-cancelled'
+    };
+    return classMap[status] || 'status-pending';
+}
+
+// 获取转码状态文本
+function getTranscodeStatusText(status) {
+    const textMap = {
+        'pending': '等待中',
+        'processing': '转码中',
+        'success': '已完成',
+        'failed': '失败',
+        'cancelled': '已取消'
+    };
+    return textMap[status] || status;
+}
+
+// 开始轮询转码任务状态
+function startTranscodePolling() {
+    if (transcodeState.isPolling) return;
+    
+    transcodeState.isPolling = true;
+    pollTranscodeStatus();
+}
+
+// 轮询转码状态
+async function pollTranscodeStatus() {
+    if (!transcodeState.isPolling) return;
+    
+    const hasActiveTasks = await loadTranscodeTasks();
+    
+    if (hasActiveTasks && state.currentPage === 'transcode') {
+        setTimeout(pollTranscodeStatus, 1000);
+    } else {
+        transcodeState.isPolling = false;
+    }
+}
+
+// 停止转码轮询
+function stopTranscodePolling() {
+    transcodeState.isPolling = false;
+}
+
+// 预设按钮点击事件
+function initPresetButtons() {
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const preset = btn.dataset.preset;
+            if (ffmpegPresets[preset]) {
+                document.getElementById('ffmpeg-params').value = ffmpegPresets[preset];
+                // 高亮当前选中的预设
+                document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                showToast(`已应用预设: ${btn.textContent}`, 'info');
+            }
+        });
+    });
+}
+
+// 页签切换功能
+function initTranscodeTabs() {
+    document.querySelectorAll('.transcode-tabs .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // 移除所有 active
+            document.querySelectorAll('.transcode-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+            
+            // 添加 active
+            btn.classList.add('active');
+            const tabId = 'tab-' + btn.dataset.tab;
+            document.getElementById(tabId)?.classList.add('active');
+            
+            // 切换到任务列表时刷新任务
+            if (btn.dataset.tab === 'task-list') {
+                loadTranscodeTasks();
+            }
+        });
+    });
+}
+
+// 刷新任务列表按钮
+async function refreshTranscodeTasks() {
+    showToast('正在刷新...', 'info');
+    await loadTranscodeTasks();
+    showToast('已刷新', 'success');
+}
+
+// 清除已完成任务
+async function clearCompletedTasks() {
+    try {
+        await window.go.app.App.ClearCompletedTranscodeTasks();
+        showToast('已清除完成的任务', 'success');
+        await loadTranscodeTasks();
+    } catch (error) {
+        console.error('清除任务失败:', error);
+        showToast(`清除失败: ${error}`, 'error');
+    }
+}
+
+// 转码页面事件绑定
+function initTranscodeEvents() {
+    // 页签切换
+    initTranscodeTabs();
+    
+    // 文件夹选择和扫描
+    document.getElementById('btn-select-folder')?.addEventListener('click', selectTranscodeFolder);
+    document.getElementById('btn-scan-folder')?.addEventListener('click', scanTranscodeFolder);
+    
+    // 转码控制
+    document.getElementById('btn-start-transcode')?.addEventListener('click', startTranscode);
+    document.getElementById('btn-cancel-transcode')?.addEventListener('click', cancelTranscode);
+    
+    // 任务列表操作
+    document.getElementById('btn-refresh-tasks')?.addEventListener('click', refreshTranscodeTasks);
+    document.getElementById('btn-clear-completed')?.addEventListener('click', clearCompletedTasks);
+    
+    // 全选复选框
+    document.getElementById('select-all-videos')?.addEventListener('change', toggleSelectAllVideos);
+    
+    initPresetButtons();
+}
+
 // ==================== 自动刷新 ====================
 
 function startAutoRefresh() {
@@ -380,6 +801,9 @@ async function initApp() {
     // 初始化导航
     initNavigation();
     
+    // 初始化转码事件
+    initTranscodeEvents();
+    
     // 加载系统信息
     await loadSystemInfo();
     
@@ -402,4 +826,72 @@ if (document.readyState === 'loading') {
 // 页面卸载时停止刷新
 window.addEventListener('beforeunload', () => {
     stopAutoRefresh();
+});
+
+// ==================== 退出确认弹窗 ====================
+
+// 显示退出确认弹窗
+function showShutdownModal(info) {
+    const modal = document.getElementById('shutdown-modal');
+    const message = document.getElementById('shutdown-message');
+    if (!modal || !message) return;
+    
+    message.textContent = `当前有 ${info.activeCount} 个任务正在处理中，${info.pendingCount} 个任务等待处理。请选择退出方式：`;
+    modal.style.display = 'flex';
+}
+
+// 隐藏退出确认弹窗
+function hideShutdownModal() {
+    const modal = document.getElementById('shutdown-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// 监听窗口关闭事件（从 Wails 后端触发）
+if (window.runtime && window.runtime.EventsOn) {
+    window.runtime.EventsOn("shutdown-requested", async () => {
+        try {
+            const info = await window.go.app.App.RequestShutdown();
+            if (info.hasActiveTasks) {
+                showShutdownModal(info);
+            } else {
+                // 没有活动任务，直接退出
+                await window.go.app.App.ShutdownNow();
+            }
+        } catch (error) {
+            console.error('处理退出请求失败:', error);
+            // 出错时直接退出
+            await window.go.app.App.ShutdownNow();
+        }
+    });
+}
+
+// 退出弹窗按钮事件处理
+document.getElementById('shutdown-now-btn')?.addEventListener('click', async () => {
+    try {
+        hideShutdownModal();
+        showToast('正在停止任务并退出...', 'info');
+        await window.go.app.App.ShutdownNow();
+    } catch (error) {
+        console.error('立即退出失败:', error);
+        showToast('退出失败，请重试', 'error');
+    }
+});
+
+document.getElementById('shutdown-wait-btn')?.addEventListener('click', async () => {
+    try {
+        hideShutdownModal();
+        state.isShuttingDown = true;
+        showToast('正在等待任务完成后退出...', 'info');
+        await window.go.app.App.ShutdownAfterCompletion();
+    } catch (error) {
+        console.error('等待完成后退出失败:', error);
+        showToast('操作失败，请重试', 'error');
+        state.isShuttingDown = false;
+    }
+});
+
+document.getElementById('shutdown-cancel-btn')?.addEventListener('click', () => {
+    hideShutdownModal();
 });

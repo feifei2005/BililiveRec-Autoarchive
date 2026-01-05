@@ -5,29 +5,35 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/user/bililive-recorder-autoarchive/internal/autostart"
 	"github.com/user/bililive-recorder-autoarchive/internal/config"
 	"github.com/user/bililive-recorder-autoarchive/internal/processor"
 	"github.com/user/bililive-recorder-autoarchive/internal/storage"
+	"github.com/user/bililive-recorder-autoarchive/internal/transcoder"
 )
 
 // App 应用程序结构体，用于 Wails 绑定
 // 所有公开方法都可以从前端 JavaScript 调用
 type App struct {
-	ctx       context.Context
-	config    *config.Config
-	processor *processor.DefaultProcessor
-	storage   storage.Storage
-	autostart *autostart.AutoStart
+	ctx        context.Context
+	config     *config.Config
+	processor  *processor.DefaultProcessor
+	storage    storage.Storage
+	autostart  *autostart.AutoStart
+	transcoder *transcoder.Transcoder
 
 	// 回调函数
-	onQuit       func()
-	onScanNow    func()
-	onShowWindow func()
-	onHideWindow func()
+	onQuit                    func()
+	onScanNow                 func()
+	onShowWindow              func()
+	onHideWindow              func()
+	onShutdownNow             func()                // 立即关闭回调
+	onShutdownAfterCompletion func(callback func()) // 等待任务完成后关闭回调
 }
 
 // NewApp 创建新的应用实例
@@ -55,12 +61,28 @@ func (a *App) SetAutostart(as *autostart.AutoStart) {
 	a.autostart = as
 }
 
+// SetTranscoder 设置转码器
+func (a *App) SetTranscoder(t *transcoder.Transcoder) {
+	a.transcoder = t
+}
+
+// GetTranscoder 获取转码器实例
+func (a *App) GetTranscoder() *transcoder.Transcoder {
+	return a.transcoder
+}
+
 // SetCallbacks 设置回调函数
 func (a *App) SetCallbacks(onQuit, onScanNow, onShowWindow, onHideWindow func()) {
 	a.onQuit = onQuit
 	a.onScanNow = onScanNow
 	a.onShowWindow = onShowWindow
 	a.onHideWindow = onHideWindow
+}
+
+// SetShutdownCallbacks 设置关闭相关的回调函数
+func (a *App) SetShutdownCallbacks(onShutdownNow func(), onShutdownAfterCompletion func(callback func())) {
+	a.onShutdownNow = onShutdownNow
+	a.onShutdownAfterCompletion = onShutdownAfterCompletion
 }
 
 // Startup 应用启动时由 Wails 调用
@@ -377,4 +399,247 @@ func (a *App) GetStats() Stats {
 	}
 
 	return stats
+}
+
+// ================== 关闭相关 API ==================
+
+// ShutdownInfo 关闭信息
+type ShutdownInfo struct {
+	HasActiveTasks bool `json:"hasActiveTasks"`
+	ActiveCount    int  `json:"activeCount"`
+	PendingCount   int  `json:"pendingCount"`
+}
+
+// GetActiveTasksCount 获取正在处理中的任务数量
+func (a *App) GetActiveTasksCount() int {
+	if a.processor == nil {
+		return 0
+	}
+	return a.processor.GetActiveTasksCount()
+}
+
+// GetPendingTasksCount 获取待处理的任务数量
+func (a *App) GetPendingTasksCount() int {
+	if a.processor == nil {
+		return 0
+	}
+	return a.processor.GetPendingTasksCount()
+}
+
+// RequestShutdown 请求关闭应用，返回当前任务状态信息
+// 前端可以根据返回的信息决定是否显示确认对话框
+func (a *App) RequestShutdown() ShutdownInfo {
+	if a.processor == nil {
+		return ShutdownInfo{
+			HasActiveTasks: false,
+			ActiveCount:    0,
+			PendingCount:   0,
+		}
+	}
+
+	activeCount := a.processor.GetActiveTasksCount()
+	pendingCount := a.processor.GetPendingTasksCount()
+
+	return ShutdownInfo{
+		HasActiveTasks: activeCount > 0,
+		ActiveCount:    activeCount,
+		PendingCount:   pendingCount,
+	}
+}
+
+// ShutdownNow 立即关闭，停止所有任务
+func (a *App) ShutdownNow() {
+	log.Println("前端请求立即关闭（停止所有任务）")
+	if a.processor != nil {
+		a.processor.StopNow()
+	}
+	if a.onShutdownNow != nil {
+		a.onShutdownNow()
+	} else if a.onQuit != nil {
+		a.onQuit()
+	}
+}
+
+// ShutdownAfterCompletion 等待任务完成后关闭
+func (a *App) ShutdownAfterCompletion() {
+	log.Println("前端请求等待任务完成后关闭")
+	if a.onShutdownAfterCompletion != nil {
+		a.onShutdownAfterCompletion(func() {
+			// 任务完成后的回调
+			log.Println("所有任务已完成，正在关闭应用...")
+			if a.onQuit != nil {
+				a.onQuit()
+			}
+		})
+	} else {
+		// 如果没有设置回调，使用默认行为：在后台等待
+		go func() {
+			if a.processor != nil {
+				// 等待最多30分钟
+				a.processor.WaitForCompletion(30 * time.Minute)
+			}
+			log.Println("任务完成，正在关闭应用...")
+			if a.onQuit != nil {
+				a.onQuit()
+			}
+		}()
+	}
+}
+
+// ================== 转码相关 API ==================
+
+// TranscodeRequest 转码请求
+type TranscodeRequest struct {
+	Files                 []string `json:"files"`
+	Params                string   `json:"params"`
+	Format                string   `json:"format"`
+	PreserveCover         bool     `json:"preserveCover"`
+	DeleteSourceOnSuccess bool     `json:"deleteSourceOnSuccess"`
+}
+
+// TranscodeResult 转码结果
+type TranscodeResult struct {
+	Success   bool   `json:"success"`
+	TaskCount int    `json:"taskCount"`
+	Error     string `json:"error"`
+}
+
+// TranscodeTaskInfo 转码任务信息
+type TranscodeTaskInfo struct {
+	ID        string  `json:"id"`
+	InputFile string  `json:"inputFile"`
+	Status    string  `json:"status"`
+	Progress  float64 `json:"progress"`
+	Error     string  `json:"error"`
+}
+
+// SelectFolder 打开文件夹选择对话框
+func (a *App) SelectFolder() string {
+	// 使用 PowerShell 调用 Windows 文件夹选择对话框
+	cmd := fmt.Sprintf(`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择要转码的文件夹'; $result = $dialog.ShowDialog(); if ($result -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"`)
+
+	out, err := execCommand(cmd)
+	if err != nil {
+		log.Printf("选择文件夹失败: %v", err)
+		return ""
+	}
+	return out
+}
+
+// execCommand 执行命令并返回输出
+func execCommand(cmd string) (string, error) {
+	c := exec.Command("cmd", "/C", cmd)
+	output, err := c.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// ScanVideoFolder 扫描文件夹中的视频文件
+func (a *App) ScanVideoFolder(path string) []transcoder.VideoFile {
+	if a.transcoder == nil {
+		log.Println("转码器未初始化")
+		return []transcoder.VideoFile{}
+	}
+
+	videos, err := a.transcoder.ScanFolder(path)
+	if err != nil {
+		log.Printf("扫描文件夹失败: %v", err)
+		return []transcoder.VideoFile{}
+	}
+
+	return videos
+}
+
+// StartTranscode 开始转码
+func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
+	if a.transcoder == nil {
+		return TranscodeResult{
+			Success: false,
+			Error:   "转码器未初始化",
+		}
+	}
+
+	if len(req.Files) == 0 {
+		return TranscodeResult{
+			Success: false,
+			Error:   "未选择任何文件",
+		}
+	}
+
+	// 确定输出扩展名
+	outputExt := ".mp4"
+	if req.Format == "mkv" {
+		outputExt = ".mkv"
+	}
+
+	config := transcoder.TranscodeConfig{
+		CustomArgs:            req.Params,
+		OutputExt:             outputExt,
+		DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
+	}
+
+	taskCount := 0
+	for _, file := range req.Files {
+		_, err := a.transcoder.AddTask(file, config)
+		if err != nil {
+			log.Printf("添加转码任务失败: %s, 错误: %v", file, err)
+			continue
+		}
+		taskCount++
+	}
+
+	return TranscodeResult{
+		Success:   taskCount > 0,
+		TaskCount: taskCount,
+	}
+}
+
+// GetTranscodeTasks 获取所有转码任务
+func (a *App) GetTranscodeTasks() []TranscodeTaskInfo {
+	if a.transcoder == nil {
+		return []TranscodeTaskInfo{}
+	}
+
+	tasks := a.transcoder.GetAllTasks()
+	result := make([]TranscodeTaskInfo, 0, len(tasks))
+
+	for _, task := range tasks {
+		result = append(result, TranscodeTaskInfo{
+			ID:        task.ID,
+			InputFile: task.InputPath,
+			Status:    string(task.Status),
+			Progress:  task.Progress,
+			Error:     task.Error,
+		})
+	}
+
+	return result
+}
+
+// CancelTranscodeTask 取消单个转码任务
+func (a *App) CancelTranscodeTask(taskID string) error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	return a.transcoder.CancelTask(taskID)
+}
+
+// CancelAllTranscode 取消所有转码任务
+func (a *App) CancelAllTranscode() error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	a.transcoder.CancelAll()
+	return nil
+}
+
+// ClearCompletedTranscodeTasks 清除已完成的转码任务
+func (a *App) ClearCompletedTranscodeTasks() error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	a.transcoder.ClearCompleted()
+	return nil
 }

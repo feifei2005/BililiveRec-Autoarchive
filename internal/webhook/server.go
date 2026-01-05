@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/user/bililive-recorder-autoarchive/internal/transcoder"
 )
 
 // EventType 事件类型
@@ -41,6 +45,11 @@ type EventData struct {
 // Handler 事件处理函数类型
 type Handler func(event *Event) error
 
+// TranscoderProvider 转码器提供者接口
+type TranscoderProvider interface {
+	GetTranscoder() *transcoder.Transcoder
+}
+
 // Server Webhook 服务器
 type Server struct {
 	config       Config
@@ -48,6 +57,7 @@ type Server struct {
 	handlers     map[EventType][]Handler
 	processedIDs sync.Map // 用于事件去重，存储已处理的 EventId
 	mu           sync.RWMutex
+	app          TranscoderProvider // 应用程序实例，用于获取转码器
 }
 
 // Config 服务器配置
@@ -79,16 +89,28 @@ func (s *Server) On(eventType EventType, handler Handler) {
 	s.handlers[eventType] = append(s.handlers[eventType], handler)
 }
 
+// SetApp 设置应用程序实例
+func (s *Server) SetApp(app TranscoderProvider) {
+	s.app = app
+}
+
 // Start 启动服务器
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.config.WebhookPath, s.handleWebhook)
 
+	// 转码相关 API 端点
+	mux.HandleFunc("/api/transcode/select-folder", s.handleSelectFolder)
+	mux.HandleFunc("/api/transcode/scan", s.handleScanFolder)
+	mux.HandleFunc("/api/transcode/start", s.handleStartTranscode)
+	mux.HandleFunc("/api/transcode/tasks", s.handleGetTasks)
+	mux.HandleFunc("/api/transcode/cancel", s.handleCancelTask)
+
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 60 * time.Second,
 	}
 
 	// 启动定时清理过期的去重记录
@@ -189,4 +211,250 @@ func (s *Server) GetFullPath(relativePath string) string {
 		return relativePath
 	}
 	return s.config.InputDir + "/" + relativePath
+}
+
+// ================== 转码 API 处理函数 ==================
+
+// handleSelectFolder 处理文件夹选择请求
+func (s *Server) handleSelectFolder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	path, err := selectFolderDialog()
+	if err != nil {
+		log.Printf("选择文件夹失败: %v", err)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"path":    path,
+	})
+}
+
+// selectFolderDialog 使用 PowerShell 调用文件夹选择对话框
+func selectFolderDialog() (string, error) {
+	// 使用 -NoProfile 加速启动，-WindowStyle Hidden 隐藏窗口
+	psScript := `
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择要转码的文件夹'
+$dialog.ShowNewFolderButton = $true
+# 使用隐藏窗口作为父窗口来确保对话框显示在最前面
+$form = New-Object System.Windows.Forms.Form
+$form.TopMost = $true
+$result = $dialog.ShowDialog($form)
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Host $dialog.SelectedPath
+}
+$form.Dispose()
+`
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+
+	// 隐藏 PowerShell 窗口
+	hidePowerShellWindow(cmd)
+
+	output, err := cmd.Output()
+	if err != nil {
+		// 检查是否有 stderr 输出
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("执行 PowerShell 失败: %w, stderr: %s", err, string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("执行 PowerShell 失败: %w", err)
+	}
+
+	result := strings.TrimSpace(string(output))
+	// 移除可能的 BOM 或其他不可见字符
+	result = strings.TrimPrefix(result, "\ufeff")
+	return result, nil
+}
+
+// handleScanFolder 处理文件夹扫描请求
+func (s *Server) handleScanFolder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if req.Path == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Path is required",
+		})
+		return
+	}
+
+	if s.app == nil || s.app.GetTranscoder() == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Transcoder not initialized",
+		})
+		return
+	}
+
+	videos, err := s.app.GetTranscoder().ScanFolder(req.Path)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"files":   videos,
+	})
+}
+
+// handleStartTranscode 处理开始转码请求
+func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Files      []string `json:"files"`
+		CustomArgs string   `json:"customArgs"`
+		OutputDir  string   `json:"outputDir"`
+		OutputExt  string   `json:"outputExt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if len(req.Files) == 0 {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "No files specified",
+		})
+		return
+	}
+
+	if s.app == nil || s.app.GetTranscoder() == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Transcoder not initialized",
+		})
+		return
+	}
+
+	tc := s.app.GetTranscoder()
+	taskIDs := make([]string, 0, len(req.Files))
+
+	config := transcoder.TranscodeConfig{
+		CustomArgs: req.CustomArgs,
+		OutputDir:  req.OutputDir,
+		OutputExt:  req.OutputExt,
+	}
+
+	for _, file := range req.Files {
+		task, err := tc.AddTask(file, config)
+		if err != nil {
+			log.Printf("添加转码任务失败: %s, 错误: %v", file, err)
+			continue
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"taskIds": taskIDs,
+	})
+}
+
+// handleGetTasks 处理获取任务列表请求
+func (s *Server) handleGetTasks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.app == nil || s.app.GetTranscoder() == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Transcoder not initialized",
+		})
+		return
+	}
+
+	tasks := s.app.GetTranscoder().GetAllTasks()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"tasks":   tasks,
+	})
+}
+
+// handleCancelTask 处理取消任务请求
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		TaskID string `json:"taskId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if req.TaskID == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Task ID is required",
+		})
+		return
+	}
+
+	if s.app == nil || s.app.GetTranscoder() == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Transcoder not initialized",
+		})
+		return
+	}
+
+	if err := s.app.GetTranscoder().CancelTask(req.TaskID); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
 }

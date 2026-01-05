@@ -508,3 +508,703 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: #94a3b8;
 }
+
+/* ==================== 任务分区样式 ==================== */
+.task-sections {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+}
+
+.task-section {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 1rem;
+    max-height: 350px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+}
+
+.section-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.status-icon {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-icon.pending { background: var(--warning-color); }
+.status-icon.processing { background: var(--info-color); }
+.status-icon.success { background: var(--success-color); }
+.status-icon.failed { background: var(--error-color); }
+
+.task-section .task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.task-section .task-item {
+    padding: 0.75rem;
+    border-radius: 6px;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    transition: border-color 0.2s;
+}
+
+.task-section .task-item:hover {
+    border-color: #cbd5e1;
+}
+
+.task-section .task-item.processing {
+    border-left: 3px solid var(--info-color);
+}
+
+.task-section .task-item.pending {
+    border-left: 3px solid var(--warning-color);
+}
+
+.task-section .task-item.success {
+    border-left: 3px solid var(--success-color);
+}
+
+.task-section .task-item.failed,
+.task-section .task-item.discarded {
+    border-left: 3px solid var(--error-color);
+}
+
+.task-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.25rem;
+}
+
+.task-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.task-time {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    margin-left: 0.5rem;
+}
+
+.task-file {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-progress {
+    margin-top: 0.5rem;
+    background: #e2e8f0;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.task-progress .progress-bar {
+    background: var(--primary-color);
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.task-progress .progress-text {
+    position: absolute;
+    right: 0;
+    top: -18px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.task-error {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--error-color);
+    padding: 0.25rem 0.5rem;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+.empty-message {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    padding: 2rem 1rem;
+    font-style: italic;
+}
+
+/* 响应式：小屏幕时任务分区单列显示 */
+@media (max-width: 900px) {
+    .task-sections {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ==================== 弹窗样式 ==================== */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    backdrop-filter: blur(2px);
+}
+
+.modal-content {
+    background: var(--card-bg);
+    padding: 2rem;
+    border-radius: var(--radius);
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95) translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+.modal-content h3 {
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+}
+
+.modal-content p {
+    margin-bottom: 1.5rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.modal-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.modal-buttons .btn {
+    flex: 1;
+    min-width: 120px;
+    padding: 0.625rem 1rem;
+}
+
+.btn-danger {
+    background: var(--error-color);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+}
+
+/* 添加 success 状态徽章样式（与 completed 一致） */
+.status-success {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: var(--success-color);
+}
+
+/* ==================== 转码功能样式 ==================== */
+
+/* 页签导航样式 */
+.transcode-tabs {
+    display: flex;
+    border-bottom: 2px solid var(--border-color);
+    margin-bottom: 20px;
+}
+
+.tab-btn {
+    padding: 10px 24px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.3s;
+}
+
+.tab-btn:hover {
+    color: var(--primary-color);
+}
+
+.tab-btn.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.tab-content {
+    padding: 0;
+}
+
+.tab-pane {
+    display: none;
+}
+
+.tab-pane.active {
+    display: block;
+}
+
+/* 任务列表操作栏 */
+.task-actions-bar {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.transcode-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+/* 文件夹选择 */
+.folder-select {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.folder-select input {
+    flex: 1;
+    cursor: pointer;
+}
+
+/* 视频列表 */
+.video-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--bg-color);
+}
+
+.video-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.2s;
+}
+
+.video-item:last-child {
+    border-bottom: none;
+}
+
+.video-item:hover {
+    background-color: rgba(59, 130, 246, 0.05);
+}
+
+.video-item input[type="checkbox"] {
+    width: 1.125rem;
+    height: 1.125rem;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.video-item-content {
+    flex: 1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.video-item .filename {
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    margin-right: 1rem;
+}
+
+.video-info {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.video-info .duration,
+.video-info .resolution {
+    background: #f1f5f9;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+}
+
+.cover-status {
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.cover-status.has-cover {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: var(--success-color);
+}
+
+.cover-status.no-cover {
+    background-color: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color);
+}
+
+/* 计数徽章 */
+.count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    padding: 0 0.5rem;
+    background: var(--primary-color);
+    color: white;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 0.5rem;
+}
+
+/* 预设按钮 */
+.presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.preset-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.preset-btn:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.preset-btn.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+/* 转码操作按钮 */
+.transcode-actions {
+    display: flex;
+    gap: 1rem;
+    padding: 1rem;
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+}
+
+.transcode-actions .btn {
+    min-width: 120px;
+}
+
+/* 转码任务列表 */
+.transcode-task-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--bg-color);
+}
+
+.transcode-task-item {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    border-left: 3px solid transparent;
+}
+
+.transcode-task-item:last-child {
+    border-bottom: none;
+}
+
+.transcode-task-item.status-pending {
+    border-left-color: var(--warning-color);
+}
+
+.transcode-task-item.status-processing {
+    border-left-color: var(--info-color);
+    background: rgba(59, 130, 246, 0.02);
+}
+
+.transcode-task-item.status-success {
+    border-left-color: var(--success-color);
+}
+
+.transcode-task-item.status-failed {
+    border-left-color: var(--error-color);
+}
+
+.transcode-task-item.status-cancelled {
+    border-left-color: var(--secondary-color);
+    opacity: 0.7;
+}
+
+.transcode-task-item .task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.transcode-task-item .task-filename {
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 0.75rem;
+}
+
+.task-status-badge {
+    padding: 0.25rem 0.625rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.task-status-badge.status-pending {
+    background-color: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color);
+}
+
+.task-status-badge.status-processing {
+    background-color: rgba(59, 130, 246, 0.1);
+    color: var(--info-color);
+}
+
+.task-status-badge.status-success {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: var(--success-color);
+}
+
+.task-status-badge.status-failed {
+    background-color: rgba(239, 68, 68, 0.1);
+    color: var(--error-color);
+}
+
+.task-status-badge.status-cancelled {
+    background-color: #f1f5f9;
+    color: var(--secondary-color);
+}
+
+/* 进度条 */
+.task-progress-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.progress-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: #e2e8f0;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), #60a5fa);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.task-progress-container .progress-text {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    min-width: 3rem;
+    text-align: right;
+}
+
+/* 任务错误信息 */
+.task-error-msg {
+    font-size: 0.75rem;
+    color: var(--error-color);
+    background: rgba(239, 68, 68, 0.05);
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    word-break: break-all;
+}
+
+/* 可展开的错误详情 */
+.task-error-details {
+    margin-bottom: 0.5rem;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.task-error-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(239, 68, 68, 0.08);
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--error-color);
+    font-weight: 500;
+    user-select: none;
+    list-style: none;
+}
+
+.task-error-summary::-webkit-details-marker {
+    display: none;
+}
+
+.task-error-summary::after {
+    content: '▼';
+    font-size: 0.625rem;
+    margin-left: auto;
+    transition: transform 0.2s;
+}
+
+.task-error-details[open] .task-error-summary::after {
+    transform: rotate(180deg);
+}
+
+.task-error-summary:hover {
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.error-icon {
+    font-size: 0.875rem;
+}
+
+/* FFmpeg 输出样式 */
+.ffmpeg-output {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    background: #1a1a1a;
+    color: #ff6b6b;
+    padding: 12px;
+    margin: 0;
+    border-radius: 0 0 4px 4px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 250px;
+    overflow-y: auto;
+}
+
+/* 滚动条样式 for FFmpeg output */
+.ffmpeg-output::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.ffmpeg-output::-webkit-scrollbar-track {
+    background: #2a2a2a;
+}
+
+.ffmpeg-output::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+.ffmpeg-output::-webkit-scrollbar-thumb:hover {
+    background: #666;
+}
+
+/* 任务操作 */
+.task-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.btn-sm {
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+}
+
+/* Toast warning 样式 */
+.toast-warning {
+    border-left: 4px solid var(--warning-color);
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .folder-select {
+        flex-direction: column;
+    }
+    
+    .video-item-content {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+    
+    .video-info {
+        flex-wrap: wrap;
+    }
+    
+    .presets {
+        flex-direction: column;
+    }
+    
+    .preset-btn {
+        width: 100%;
+        text-align: center;
+    }
+    
+    .transcode-actions {
+        flex-direction: column;
+    }
+    
+    .transcode-actions .btn {
+        width: 100%;
+    }
+}

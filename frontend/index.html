@@ -31,6 +31,10 @@
                     <span class="nav-icon">📝</span>
                     <span class="nav-text">错误日志</span>
                 </li>
+                <li class="nav-item" data-page="transcode">
+                    <span class="nav-icon">🎬</span>
+                    <span class="nav-text">视频转码</span>
+                </li>
             </ul>
             <div class="sidebar-footer">
                 <span id="version-info">版本: --</span>
@@ -99,35 +103,44 @@
             <section id="page-tasks" class="page">
                 <div class="page-header">
                     <h1>任务列表</h1>
-                    <div class="task-filters">
-                        <select id="task-filter" class="select-input">
-                            <option value="all">全部任务</option>
-                            <option value="processing">处理中</option>
-                            <option value="pending">待处理</option>
-                            <option value="success">已成功</option>
-                            <option value="failed">失败</option>
-                            <option value="discarded">已丢弃</option>
-                        </select>
-                    </div>
                 </div>
                 
-                <div class="task-table-container">
-                    <table class="task-table">
-                        <thead>
-                            <tr>
-                                <th>状态</th>
-                                <th>主播</th>
-                                <th>输入文件</th>
-                                <th>进度</th>
-                                <th>创建时间</th>
-                            </tr>
-                        </thead>
-                        <tbody id="task-table-body">
-                            <tr>
-                                <td colspan="5" class="empty-state">暂无任务</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                <div class="task-sections">
+                    <!-- 待处理任务 -->
+                    <div class="task-section pending-section">
+                        <h3 class="section-title">
+                            <span class="status-icon pending"></span>
+                            待处理 (<span id="pending-count">0</span>)
+                        </h3>
+                        <div id="pending-tasks" class="task-list"></div>
+                    </div>
+                    
+                    <!-- 处理中任务 -->
+                    <div class="task-section processing-section">
+                        <h3 class="section-title">
+                            <span class="status-icon processing"></span>
+                            处理中 (<span id="processing-count">0</span>)
+                        </h3>
+                        <div id="processing-tasks" class="task-list"></div>
+                    </div>
+                    
+                    <!-- 已成功任务 -->
+                    <div class="task-section success-section">
+                        <h3 class="section-title">
+                            <span class="status-icon success"></span>
+                            已成功 (<span id="success-count">0</span>)
+                        </h3>
+                        <div id="success-tasks" class="task-list"></div>
+                    </div>
+                    
+                    <!-- 错误&丢弃任务 -->
+                    <div class="task-section failed-section">
+                        <h3 class="section-title">
+                            <span class="status-icon failed"></span>
+                            错误/丢弃 (<span id="failed-count">0</span>)
+                        </h3>
+                        <div id="failed-tasks" class="task-list"></div>
+                    </div>
                 </div>
             </section>
 
@@ -258,11 +271,142 @@
                     <div class="empty-state">暂无错误日志</div>
                 </div>
             </section>
+
+            <!-- 视频转码页面 -->
+            <section id="page-transcode" class="page">
+                <div class="page-header">
+                    <h1>视频转码</h1>
+                </div>
+                
+                <!-- 页签导航 -->
+                <div class="transcode-tabs">
+                    <button class="tab-btn active" data-tab="new-task">新建任务</button>
+                    <button class="tab-btn" data-tab="task-list">任务列表</button>
+                </div>
+                
+                <!-- 页签内容 -->
+                <div class="tab-content">
+                    <!-- 新建任务页签 -->
+                    <div class="tab-pane active" id="tab-new-task">
+                        <!-- 文件夹选择 -->
+                        <div class="config-section">
+                            <h2>📁 选择文件夹</h2>
+                            <div class="form-group">
+                                <div class="folder-select">
+                                    <input type="text" id="transcode-folder" class="text-input" placeholder="输入或选择要转码的文件夹路径">
+                                    <button id="btn-select-folder" class="btn btn-secondary">浏览...</button>
+                                    <button id="btn-scan-folder" class="btn btn-primary">扫描</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 扫描到的视频列表 -->
+                        <div class="config-section">
+                            <h2>🎥 视频文件 <span id="video-count" class="count-badge">0</span></h2>
+                            <div class="form-group checkbox-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="select-all-videos">
+                                    <span class="checkbox-text">全选/取消全选</span>
+                                </label>
+                            </div>
+                            <div id="video-list" class="video-list">
+                                <div class="empty-state">请先选择并扫描文件夹</div>
+                            </div>
+                        </div>
+
+                        <!-- 转码参数 -->
+                        <div class="config-section">
+                            <h2>🔧 转码参数</h2>
+                            <div class="form-group">
+                                <label for="ffmpeg-params">FFmpeg 参数</label>
+                                <input type="text" id="ffmpeg-params" class="text-input" placeholder="-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k">
+                                <span class="form-hint">自定义 FFmpeg 编码参数</span>
+                            </div>
+                            <div class="form-group">
+                                <label>预设方案</label>
+                                <div class="presets">
+                                    <button class="preset-btn" data-preset="h264-high">H.264 高质量</button>
+                                    <button class="preset-btn" data-preset="h264-medium">H.264 中等</button>
+                                    <button class="preset-btn" data-preset="h265-medium">H.265 中等</button>
+                                    <button class="preset-btn" data-preset="av1-medium">AV1 中等</button>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="output-format">输出格式</label>
+                                    <select id="output-format" class="text-input">
+                                        <option value="mp4">MP4</option>
+                                        <option value="mkv">MKV</option>
+                                    </select>
+                                </div>
+                                <div class="form-group checkbox-group" style="align-self: flex-end; padding-bottom: 0.5rem;">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="preserve-cover" checked>
+                                        <span class="checkbox-text">保留封面</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="form-group checkbox-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="delete-source-on-success">
+                                    <span class="checkbox-text">转码成功后删除源文件</span>
+                                </label>
+                                <span class="form-hint">⚠️ 注意：此操作不可逆，请确保转码结果正确后再启用</span>
+                            </div>
+                        </div>
+
+                        <!-- 转码控制按钮 -->
+                        <div class="transcode-actions">
+                            <button id="btn-start-transcode" class="btn btn-primary">
+                                <span class="btn-icon">▶️</span>
+                                开始转码
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 任务列表页签 -->
+                    <div class="tab-pane" id="tab-task-list">
+                        <div class="config-section">
+                            <h2>📋 转码任务 <span id="transcode-task-count" class="count-badge">0</span></h2>
+                            <div id="transcode-task-list" class="transcode-task-list">
+                                <div class="empty-state">暂无转码任务</div>
+                            </div>
+                            <div class="task-actions-bar">
+                                <button id="btn-refresh-tasks" class="btn btn-secondary">
+                                    <span class="btn-icon">🔄</span>
+                                    刷新
+                                </button>
+                                <button id="btn-cancel-transcode" class="btn btn-danger" disabled>
+                                    <span class="btn-icon">⏹️</span>
+                                    取消全部
+                                </button>
+                                <button id="btn-clear-completed" class="btn btn-secondary">
+                                    <span class="btn-icon">🗑️</span>
+                                    清除已完成
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 
     <!-- 消息提示 -->
     <div id="toast-container"></div>
+
+    <!-- 退出确认弹窗 -->
+    <div id="shutdown-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h3>确认退出</h3>
+            <p id="shutdown-message"></p>
+            <div class="modal-buttons">
+                <button id="shutdown-now-btn" class="btn btn-danger">立即退出（停止任务）</button>
+                <button id="shutdown-wait-btn" class="btn btn-primary">等待任务完成后退出</button>
+                <button id="shutdown-cancel-btn" class="btn btn-secondary">取消</button>
+            </div>
+        </div>
+    </div>
 
     <script src="main.js"></script>
 </body>

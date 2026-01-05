@@ -14,6 +14,7 @@ type Config struct {
 	Rules      RulesConfig      `yaml:"rules"`
 	Covers     CoversConfig     `yaml:"covers"`
 	FFmpeg     FFmpegConfig     `yaml:"ffmpeg"`
+	Transcode  TranscodeConfig  `yaml:"transcode"`
 }
 
 // ServerConfig Webhook 服务器配置
@@ -53,6 +54,20 @@ type FFmpegConfig struct {
 	Path        string   `yaml:"path"`
 	FFprobePath string   `yaml:"ffprobe_path"`
 	CustomArgs  []string `yaml:"custom_args"`
+}
+
+// TranscodeConfig 转码配置
+type TranscodeConfig struct {
+	// 默认输出格式 (mp4, mkv)
+	DefaultFormat string `yaml:"default_format"`
+	// 默认转码参数模板
+	DefaultParams string `yaml:"default_params"`
+	// 最大并发转码任务数
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// 输出目录（为空则输出到源文件同目录）
+	OutputDir string `yaml:"output_dir"`
+	// 转码完成后是否删除源文件
+	DeleteSource bool `yaml:"delete_source"`
 }
 
 // Load 从指定路径加载配置文件
@@ -101,6 +116,13 @@ func Default() *Config {
 			Path:        "ffmpeg",
 			FFprobePath: "ffprobe",
 			CustomArgs:  []string{"-c", "copy"},
+		},
+		Transcode: TranscodeConfig{
+			DefaultFormat: "mp4",
+			DefaultParams: "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k",
+			MaxConcurrent: 1,
+			OutputDir:     "",
+			DeleteSource:  false,
 		},
 	}
 }
