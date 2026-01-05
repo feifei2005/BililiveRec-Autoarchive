@@ -105,41 +105,43 @@
                     <h1>任务列表</h1>
                 </div>
                 
-                <div class="task-sections">
-                    <!-- 待处理任务 -->
-                    <div class="task-section pending-section">
-                        <h3 class="section-title">
-                            <span class="status-icon pending"></span>
-                            待处理 (<span id="pending-count">0</span>)
-                        </h3>
-                        <div id="pending-tasks" class="task-list"></div>
+                <!-- 任务状态分页标签 -->
+                <div class="status-tabs" id="task-status-tabs">
+                    <button class="status-tab-btn active" data-status="pending">
+                        <span class="tab-icon">⏳</span>
+                        <span class="tab-text">待处理</span>
+                        <span class="tab-count" id="pending-count">0</span>
+                    </button>
+                    <button class="status-tab-btn" data-status="processing">
+                        <span class="tab-icon">🔄</span>
+                        <span class="tab-text">处理中</span>
+                        <span class="tab-count" id="processing-count">0</span>
+                    </button>
+                    <button class="status-tab-btn" data-status="success">
+                        <span class="tab-icon">✅</span>
+                        <span class="tab-text">已成功</span>
+                        <span class="tab-count" id="success-count">0</span>
+                    </button>
+                    <button class="status-tab-btn" data-status="failed">
+                        <span class="tab-icon">❌</span>
+                        <span class="tab-text">错误/丢弃</span>
+                        <span class="tab-count" id="failed-count">0</span>
+                    </button>
+                </div>
+                
+                <!-- 任务内容区域 -->
+                <div class="status-tab-content">
+                    <div class="status-tab-pane active" id="task-pane-pending">
+                        <div id="pending-tasks" class="task-list-full"></div>
                     </div>
-                    
-                    <!-- 处理中任务 -->
-                    <div class="task-section processing-section">
-                        <h3 class="section-title">
-                            <span class="status-icon processing"></span>
-                            处理中 (<span id="processing-count">0</span>)
-                        </h3>
-                        <div id="processing-tasks" class="task-list"></div>
+                    <div class="status-tab-pane" id="task-pane-processing">
+                        <div id="processing-tasks" class="task-list-full"></div>
                     </div>
-                    
-                    <!-- 已成功任务 -->
-                    <div class="task-section success-section">
-                        <h3 class="section-title">
-                            <span class="status-icon success"></span>
-                            已成功 (<span id="success-count">0</span>)
-                        </h3>
-                        <div id="success-tasks" class="task-list"></div>
+                    <div class="status-tab-pane" id="task-pane-success">
+                        <div id="success-tasks" class="task-list-full"></div>
                     </div>
-                    
-                    <!-- 错误&丢弃任务 -->
-                    <div class="task-section failed-section">
-                        <h3 class="section-title">
-                            <span class="status-icon failed"></span>
-                            错误/丢弃 (<span id="failed-count">0</span>)
-                        </h3>
-                        <div id="failed-tasks" class="task-list"></div>
+                    <div class="status-tab-pane" id="task-pane-failed">
+                        <div id="failed-tasks" class="task-list-full"></div>
                     </div>
                 </div>
             </section>
@@ -309,8 +311,16 @@
                                     <span class="checkbox-text">全选/取消全选</span>
                                 </label>
                             </div>
+                            <!-- 拖拽区域 -->
+                            <div id="drop-zone" class="file-drop-zone">
+                                <div class="drop-zone-content">
+                                    <span class="drop-zone-icon">📂</span>
+                                    <p class="drop-zone-text">拖拽文件或文件夹到此处导入</p>
+                                    <p class="drop-zone-hint">支持多选，每次导入会清空上次记录</p>
+                                </div>
+                            </div>
                             <div id="video-list" class="video-list">
-                                <div class="empty-state">请先选择并扫描文件夹</div>
+                                <div class="empty-state">请先选择并扫描文件夹，或拖拽文件到上方区域</div>
                             </div>
                         </div>
 
@@ -366,25 +376,66 @@
                     
                     <!-- 任务列表页签 -->
                     <div class="tab-pane" id="tab-task-list">
-                        <div class="config-section">
-                            <h2>📋 转码任务 <span id="transcode-task-count" class="count-badge">0</span></h2>
-                            <div id="transcode-task-list" class="transcode-task-list">
-                                <div class="empty-state">暂无转码任务</div>
+                        <!-- 全局剩余时间显示 -->
+                        <div class="global-eta-bar" id="transcode-global-eta">
+                            <span class="global-eta-label">预估总剩余时间：</span>
+                            <span class="global-eta-value" id="transcode-global-eta-value">--</span>
+                        </div>
+                        
+                        <!-- 转码任务状态分页标签 -->
+                        <div class="status-tabs" id="transcode-status-tabs">
+                            <button class="status-tab-btn active" data-status="pending">
+                                <span class="tab-icon">⏳</span>
+                                <span class="tab-text">待处理</span>
+                                <span class="tab-count" id="transcode-pending-count">0</span>
+                            </button>
+                            <button class="status-tab-btn" data-status="processing">
+                                <span class="tab-icon">🔄</span>
+                                <span class="tab-text">处理中</span>
+                                <span class="tab-count" id="transcode-processing-count">0</span>
+                            </button>
+                            <button class="status-tab-btn" data-status="success">
+                                <span class="tab-icon">✅</span>
+                                <span class="tab-text">已完成</span>
+                                <span class="tab-count" id="transcode-success-count">0</span>
+                            </button>
+                            <button class="status-tab-btn" data-status="cancelled">
+                                <span class="tab-icon">❌</span>
+                                <span class="tab-text">已取消/错误</span>
+                                <span class="tab-count" id="transcode-cancelled-count">0</span>
+                            </button>
+                        </div>
+                        
+                        <!-- 转码任务内容区域 -->
+                        <div class="status-tab-content">
+                            <div class="status-tab-pane active" id="transcode-pane-pending">
+                                <div id="transcode-pending-tasks" class="task-list-full"></div>
                             </div>
-                            <div class="task-actions-bar">
-                                <button id="btn-refresh-tasks" class="btn btn-secondary">
-                                    <span class="btn-icon">🔄</span>
-                                    刷新
-                                </button>
-                                <button id="btn-cancel-transcode" class="btn btn-danger" disabled>
-                                    <span class="btn-icon">⏹️</span>
-                                    取消全部
-                                </button>
-                                <button id="btn-clear-completed" class="btn btn-secondary">
-                                    <span class="btn-icon">🗑️</span>
-                                    清除已完成
-                                </button>
+                            <div class="status-tab-pane" id="transcode-pane-processing">
+                                <div id="transcode-processing-tasks" class="task-list-full"></div>
                             </div>
+                            <div class="status-tab-pane" id="transcode-pane-success">
+                                <div id="transcode-success-tasks" class="task-list-full"></div>
+                            </div>
+                            <div class="status-tab-pane" id="transcode-pane-cancelled">
+                                <div id="transcode-cancelled-tasks" class="task-list-full"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- 操作按钮栏 -->
+                        <div class="task-actions-bar">
+                            <button id="btn-refresh-tasks" class="btn btn-secondary">
+                                <span class="btn-icon">🔄</span>
+                                刷新
+                            </button>
+                            <button id="btn-cancel-transcode" class="btn btn-danger" disabled>
+                                <span class="btn-icon">⏹️</span>
+                                取消全部
+                            </button>
+                            <button id="btn-clear-completed" class="btn btn-secondary">
+                                <span class="btn-icon">🗑️</span>
+                                清除已完成
+                            </button>
                         </div>
                     </div>
                 </div>

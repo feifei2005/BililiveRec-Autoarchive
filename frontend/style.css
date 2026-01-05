@@ -1208,3 +1208,677 @@ body {
         width: 100%;
     }
 }
+
+/* ==================== 转码任务分区样式 ==================== */
+
+/* 任务分区容器 */
+.transcode-task-list .task-section {
+    margin-bottom: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.transcode-task-list .task-section:last-child {
+    margin-bottom: 0;
+}
+
+/* 分区标题 */
+.task-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--border-color);
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.task-section-header.processing {
+    background: rgba(59, 130, 246, 0.08);
+    color: var(--info-color);
+}
+
+.task-section-header.pending {
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--warning-color);
+}
+
+.task-section-header.success {
+    background: rgba(16, 185, 129, 0.08);
+    color: var(--success-color);
+}
+
+.task-section-header.error {
+    background: rgba(239, 68, 68, 0.08);
+    color: var(--error-color);
+}
+
+.task-section-header .section-icon {
+    font-size: 1rem;
+}
+
+.task-section-header .section-title {
+    flex: 1;
+}
+
+.task-section-header .section-count {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+}
+
+/* 分区内容 */
+.task-section-body {
+    background: var(--card-bg);
+}
+
+.task-section-body .transcode-task-item:last-child {
+    border-bottom: none;
+}
+
+/* 进度信息区域 */
+.progress-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.progress-eta {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.progress-speed,
+.progress-fps {
+    background: #f1f5f9;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+}
+
+/* ==================== 状态分页标签样式 ==================== */
+
+/* 状态标签容器 */
+.status-tabs {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+/* 状态标签按钮 */
+.status-tab-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    border: 2px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
+    justify-content: center;
+}
+
+.status-tab-btn:hover {
+    background: var(--bg-color);
+    color: var(--text-primary);
+}
+
+.status-tab-btn.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+.status-tab-btn .tab-icon {
+    font-size: 1rem;
+}
+
+.status-tab-btn .tab-text {
+    white-space: nowrap;
+}
+
+.status-tab-btn .tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    padding: 0 0.375rem;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.status-tab-btn.active .tab-count {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+/* 不同状态的标签激活颜色 */
+.status-tab-btn[data-status="pending"].active {
+    background: var(--warning-color);
+    border-color: var(--warning-color);
+    box-shadow: 0 2px 4px rgba(245, 158, 11, 0.3);
+}
+
+.status-tab-btn[data-status="processing"].active {
+    background: var(--info-color);
+    border-color: var(--info-color);
+    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+.status-tab-btn[data-status="success"].active {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);
+}
+
+.status-tab-btn[data-status="failed"].active,
+.status-tab-btn[data-status="cancelled"].active {
+    background: var(--error-color);
+    border-color: var(--error-color);
+    box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+}
+
+/* 状态标签内容区域 */
+.status-tab-content {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+    min-height: 300px;
+    overflow: hidden;
+}
+
+.status-tab-pane {
+    display: none;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+.status-tab-pane.active {
+    display: block;
+}
+
+/* 完整任务列表样式 */
+.task-list-full {
+    max-height: calc(100vh - 350px);
+    min-height: 200px;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.task-list-full .task-item {
+    padding: 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: var(--radius);
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    transition: all 0.2s ease;
+}
+
+.task-list-full .task-item:last-child {
+    margin-bottom: 0;
+}
+
+.task-list-full .task-item:hover {
+    border-color: #cbd5e1;
+    box-shadow: var(--shadow-sm);
+}
+
+.task-list-full .task-item.processing {
+    border-left: 4px solid var(--info-color);
+    background: rgba(59, 130, 246, 0.02);
+}
+
+.task-list-full .task-item.pending {
+    border-left: 4px solid var(--warning-color);
+}
+
+.task-list-full .task-item.success {
+    border-left: 4px solid var(--success-color);
+}
+
+.task-list-full .task-item.failed,
+.task-list-full .task-item.discarded {
+    border-left: 4px solid var(--error-color);
+}
+
+.task-list-full .empty-message {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    padding: 3rem 1rem;
+    font-style: italic;
+}
+
+/* ==================== 全局剩余时间显示 ==================== */
+
+.global-eta-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.global-eta-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.global-eta-value {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+/* ==================== 任务视频信息样式 ==================== */
+
+.task-video-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    font-size: 0.8rem;
+}
+
+.task-video-info span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    background: #f1f5f9;
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
+
+.video-resolution {
+    background: rgba(59, 130, 246, 0.1) !important;
+    color: var(--info-color) !important;
+}
+
+.video-frames {
+    background: rgba(245, 158, 11, 0.1) !important;
+    color: var(--warning-color) !important;
+}
+
+.video-predicted {
+    background: rgba(16, 185, 129, 0.1) !important;
+    color: var(--success-color) !important;
+}
+
+/* ==================== 增强进度信息样式 ==================== */
+
+.task-progress-container {
+    margin: 0.75rem 0;
+}
+
+.task-progress-container .progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.task-progress-container .progress-elapsed {
+    color: var(--text-secondary);
+}
+
+.task-progress-container .progress-eta {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.task-progress-container .progress-percent {
+    font-weight: 700;
+    color: var(--text-primary);
+    min-width: 3.5rem;
+    text-align: right;
+}
+
+.task-progress-container .progress-details {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+}
+
+.task-progress-container .progress-details span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    background: #f1f5f9;
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
+
+.task-progress-container .progress-frames {
+    background: rgba(59, 130, 246, 0.08);
+    color: var(--info-color);
+}
+
+.task-progress-container .progress-fps {
+    background: rgba(16, 185, 129, 0.08);
+    color: var(--success-color);
+}
+
+.task-progress-container .progress-speed {
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--warning-color);
+}
+
+/* 进度条动画 */
+.progress-bar-fill {
+    transition: width 0.5s ease-out;
+}
+
+/* 处理中任务的脉冲效果 */
+.transcode-task-item.status-processing .progress-bar-fill {
+    animation: progressPulse 2s ease-in-out infinite;
+}
+
+@keyframes progressPulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.85;
+    }
+}
+
+/* 响应式：小屏幕时标签垂直排列 */
+@media (max-width: 768px) {
+    .status-tabs {
+        flex-direction: column;
+    }
+    
+    .status-tab-btn {
+        justify-content: flex-start;
+    }
+    
+    .task-list-full {
+        max-height: calc(100vh - 400px);
+    }
+}
+
+/* ==================== 全局ETA和进度详情样式 ==================== */
+
+/* 全局剩余时间条 */
+.global-eta-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(16, 185, 129, 0.08));
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.global-eta-bar .eta-icon {
+    font-size: 1.25rem;
+    color: var(--info-color);
+}
+
+.global-eta-bar .eta-label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.global-eta-bar .eta-value {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--card-bg);
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    box-shadow: var(--shadow-sm);
+}
+
+/* 任务视频元信息显示 */
+.task-video-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.task-video-info .info-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    background: #f1f5f9;
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
+
+.task-video-info .info-tag.resolution {
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--info-color);
+}
+
+.task-video-info .info-tag.frames {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--success-color);
+}
+
+.task-video-info .info-tag.elapsed {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color);
+}
+
+/* 进度详情区域 */
+.progress-details {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border-color);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.progress-details .detail-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.progress-details .detail-item .label {
+    color: var(--text-secondary);
+}
+
+.progress-details .detail-item .value {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* 已用时间样式 */
+.progress-details .elapsed-time .value {
+    color: var(--warning-color);
+}
+
+/* 剩余时间样式 */
+.progress-details .remaining-time .value {
+    color: var(--info-color);
+}
+
+/* 处理帧数样式 */
+.progress-details .frame-count .value {
+    color: var(--success-color);
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.75rem;
+}
+
+/* 处理速度样式 */
+.progress-details .process-speed .value {
+    color: var(--primary-color);
+}
+
+/* 预测FPS徽章 */
+.predicted-fps-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    background: rgba(139, 92, 246, 0.1);
+    color: #8b5cf6;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+
+.predicted-fps-badge::before {
+    content: '⚡';
+}
+
+/* 任务进度条增强 */
+.transcode-task-item .progress-bar-fill.calculating {
+    background: linear-gradient(
+        90deg,
+        var(--primary-color) 0%,
+        #60a5fa 50%,
+        var(--primary-color) 100%
+    );
+    background-size: 200% 100%;
+    animation: progressShimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes progressShimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* 处理中状态的脉动效果 */
+.transcode-task-item.status-processing .task-status-badge {
+    animation: statusPulse 2s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .global-eta-bar {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+    
+    .task-video-info {
+        flex-direction: column;
+    }
+    
+    .progress-details {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+/* ==================== 拖拽导入区域样式 ==================== */
+
+/* 拖拽区域 */
+.file-drop-zone {
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius);
+    padding: 2rem;
+    text-align: center;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.02), rgba(16, 185, 129, 0.02));
+    transition: all 0.3s ease;
+    cursor: pointer;
+    margin-bottom: 1rem;
+}
+
+.file-drop-zone:hover {
+    border-color: var(--primary-color);
+    background: rgba(59, 130, 246, 0.05);
+}
+
+.file-drop-zone.drag-over {
+    border-color: var(--primary-color);
+    border-style: solid;
+    background: rgba(59, 130, 246, 0.1);
+    transform: scale(1.01);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+}
+
+.drop-zone-content {
+    pointer-events: none;
+}
+
+.drop-zone-icon {
+    font-size: 2.5rem;
+    display: block;
+    margin-bottom: 0.75rem;
+    opacity: 0.7;
+}
+
+.file-drop-zone.drag-over .drop-zone-icon {
+    animation: dropBounce 0.5s ease infinite alternate;
+    opacity: 1;
+}
+
+@keyframes dropBounce {
+    from { transform: translateY(0); }
+    to { transform: translateY(-5px); }
+}
+
+.drop-zone-text {
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin: 0 0 0.5rem 0;
+}
+
+.drop-zone-hint {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.file-drop-zone.drag-over .drop-zone-text {
+    color: var(--primary-color);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .file-drop-zone {
+        padding: 1.5rem;
+    }
+    
+    .drop-zone-icon {
+        font-size: 2rem;
+    }
+}

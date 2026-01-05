@@ -5,9 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/user/bililive-recorder-autoarchive/internal/autostart"
@@ -506,34 +504,27 @@ type TranscodeResult struct {
 
 // TranscodeTaskInfo 转码任务信息
 type TranscodeTaskInfo struct {
-	ID        string  `json:"id"`
-	InputFile string  `json:"inputFile"`
-	Status    string  `json:"status"`
-	Progress  float64 `json:"progress"`
-	Error     string  `json:"error"`
+	ID                  string  `json:"id"`
+	InputFile           string  `json:"inputFile"`
+	Status              string  `json:"status"`
+	Progress            float64 `json:"progress"`
+	Error               string  `json:"error"`
+	ETAString           string  `json:"etaString"`           // 剩余时间字符串
+	ETASeconds          float64 `json:"etaSeconds"`          // 剩余秒数
+	Speed               string  `json:"speed"`               // 速度倍率
+	CurrentFPS          float64 `json:"currentFPS"`          // 当前处理 FPS
+	ElapsedSeconds      float64 `json:"elapsedSeconds"`      // 已用时间（秒）
+	ElapsedString       string  `json:"elapsedString"`       // 已用时间格式化
+	PredictedTimeString string  `json:"predictedTimeString"` // 预测总时间
+	Width               int     `json:"width"`               // 视频宽度
+	Height              int     `json:"height"`              // 视频高度
+	TotalFrames         int64   `json:"totalFrames"`         // 总帧数
+	ProcessedFrame      int64   `json:"processedFrame"`      // 已处理帧数
 }
 
 // SelectFolder 打开文件夹选择对话框
 func (a *App) SelectFolder() string {
-	// 使用 PowerShell 调用 Windows 文件夹选择对话框
-	cmd := fmt.Sprintf(`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择要转码的文件夹'; $result = $dialog.ShowDialog(); if ($result -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"`)
-
-	out, err := execCommand(cmd)
-	if err != nil {
-		log.Printf("选择文件夹失败: %v", err)
-		return ""
-	}
-	return out
-}
-
-// execCommand 执行命令并返回输出
-func execCommand(cmd string) (string, error) {
-	c := exec.Command("cmd", "/C", cmd)
-	output, err := c.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
+	return selectFolderDialog()
 }
 
 // ScanVideoFolder 扫描文件夹中的视频文件
@@ -550,6 +541,35 @@ func (a *App) ScanVideoFolder(path string) []transcoder.VideoFile {
 	}
 
 	return videos
+}
+
+// ScanMultiplePaths 扫描多个文件或文件夹中的视频文件（用于拖拽导入）
+func (a *App) ScanMultiplePaths(paths []string) []transcoder.VideoFile {
+	if a.transcoder == nil {
+		log.Println("转码器未初始化")
+		return []transcoder.VideoFile{}
+	}
+
+	var allVideos []transcoder.VideoFile
+	seen := make(map[string]bool) // 用于去重
+
+	for _, path := range paths {
+		videos, err := a.transcoder.ScanPath(path)
+		if err != nil {
+			log.Printf("扫描路径失败: %s, 错误: %v", path, err)
+			continue
+		}
+
+		for _, v := range videos {
+			if !seen[v.Path] {
+				seen[v.Path] = true
+				allVideos = append(allVideos, v)
+			}
+		}
+	}
+
+	log.Printf("扫描多个路径完成，共找到 %d 个视频文件", len(allVideos))
+	return allVideos
 }
 
 // StartTranscode 开始转码
@@ -607,15 +627,49 @@ func (a *App) GetTranscodeTasks() []TranscodeTaskInfo {
 
 	for _, task := range tasks {
 		result = append(result, TranscodeTaskInfo{
-			ID:        task.ID,
-			InputFile: task.InputPath,
-			Status:    string(task.Status),
-			Progress:  task.Progress,
-			Error:     task.Error,
+			ID:                  task.ID,
+			InputFile:           task.InputPath,
+			Status:              string(task.Status),
+			Progress:            task.Progress,
+			Error:               task.Error,
+			ETAString:           task.ETAString,
+			ETASeconds:          task.ETASeconds,
+			Speed:               task.Speed,
+			CurrentFPS:          task.CurrentFPS,
+			ElapsedSeconds:      task.ElapsedSeconds,
+			ElapsedString:       task.ElapsedString,
+			PredictedTimeString: task.PredictedTimeString,
+			Width:               task.Width,
+			Height:              task.Height,
+			TotalFrames:         task.TotalFrames,
+			ProcessedFrame:      task.ProcessedFrame,
 		})
 	}
 
 	return result
+}
+
+// TranscodeGlobalStatus 转码全局状态
+type TranscodeGlobalStatus struct {
+	TotalRemainingSeconds float64 `json:"totalRemainingSeconds"` // 总剩余时间（秒）
+	TotalRemainingString  string  `json:"totalRemainingString"`  // 总剩余时间格式化
+	PendingCount          int     `json:"pendingCount"`          // 待处理任务数
+	ProcessingCount       int     `json:"processingCount"`       // 处理中任务数
+}
+
+// GetTranscodeGlobalStatus 获取转码全局状态（包括总剩余时间）
+func (a *App) GetTranscodeGlobalStatus() TranscodeGlobalStatus {
+	if a.transcoder == nil {
+		return TranscodeGlobalStatus{}
+	}
+
+	status := a.transcoder.GetGlobalStatus()
+	return TranscodeGlobalStatus{
+		TotalRemainingSeconds: status.TotalRemainingSeconds,
+		TotalRemainingString:  status.TotalRemainingString,
+		PendingCount:          status.PendingCount,
+		ProcessingCount:       status.ProcessingCount,
+	}
 }
 
 // CancelTranscodeTask 取消单个转码任务

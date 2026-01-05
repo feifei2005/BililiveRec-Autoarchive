@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,9 @@ type Transcoder struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	maxWorkers int
+
+	// 任务序号计数器，用于保持添加顺序
+	taskSeqCounter int64
 
 	// 当前正在运行的 FFmpeg 进程，用于取消
 	currentCmd   *exec.Cmd
@@ -142,15 +146,10 @@ func generateTaskID(path string) string {
 }
 
 // ScanFolder 扫描文件夹中的视频文件（并发扫描优化）
+// 只扫描 MKV 文件
 func (t *Transcoder) ScanFolder(folderPath string) ([]VideoFile, error) {
 	videoExtensions := map[string]bool{
-		".flv":  true,
-		".mp4":  true,
-		".mkv":  true,
-		".avi":  true,
-		".mov":  true,
-		".wmv":  true,
-		".webm": true,
+		".mkv": true,
 	}
 
 	// 第一步：收集所有视频文件路径
@@ -220,6 +219,46 @@ func (t *Transcoder) ScanFolder(folderPath string) ([]VideoFile, error) {
 	return results, nil
 }
 
+// ScanPath 扫描单个文件或文件夹中的视频文件（用于拖拽导入）
+func (t *Transcoder) ScanPath(path string) ([]VideoFile, error) {
+	videoExtensions := map[string]bool{
+		".mkv": true,
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("无法访问路径: %w", err)
+	}
+
+	// 如果是文件夹，使用 ScanFolder
+	if info.IsDir() {
+		return t.ScanFolder(path)
+	}
+
+	// 如果是单个文件，检查扩展名
+	ext := strings.ToLower(filepath.Ext(path))
+	if !videoExtensions[ext] {
+		return []VideoFile{}, nil // 不是视频文件，返回空列表
+	}
+
+	// 探测单个视频文件
+	videoFile, err := t.probeVideo(path)
+	if err != nil {
+		log.Printf("[transcoder] 无法探测视频 %s: %v", path, err)
+		// 即使探测失败，也添加基本信息
+		return []VideoFile{{
+			Path: path,
+			Name: info.Name(),
+			Size: info.Size(),
+		}}, nil
+	}
+
+	videoFile.Path = path
+	videoFile.Name = info.Name()
+	videoFile.Size = info.Size()
+	return []VideoFile{*videoFile}, nil
+}
+
 // ffprobeOutput ffprobe JSON 输出结构
 type ffprobeOutput struct {
 	Streams []ffprobeStream `json:"streams"`
@@ -227,14 +266,17 @@ type ffprobeOutput struct {
 }
 
 type ffprobeStream struct {
-	Index       int    `json:"index"`
-	CodecType   string `json:"codec_type"`
-	CodecName   string `json:"codec_name"`
-	Width       int    `json:"width,omitempty"`
-	Height      int    `json:"height,omitempty"`
-	SampleRate  string `json:"sample_rate,omitempty"`
-	BitRate     string `json:"bit_rate,omitempty"`
-	Disposition struct {
+	Index        int    `json:"index"`
+	CodecType    string `json:"codec_type"`
+	CodecName    string `json:"codec_name"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
+	SampleRate   string `json:"sample_rate,omitempty"`
+	BitRate      string `json:"bit_rate,omitempty"`
+	RFrameRate   string `json:"r_frame_rate,omitempty"`   // 实际帧率（如 "30000/1001"）
+	AvgFrameRate string `json:"avg_frame_rate,omitempty"` // 平均帧率
+	NbFrames     string `json:"nb_frames,omitempty"`      // 总帧数
+	Disposition  struct {
 		AttachedPic int `json:"attached_pic"`
 	} `json:"disposition"`
 }
@@ -334,6 +376,19 @@ func (t *Transcoder) probeVideo(path string) (*VideoFile, error) {
 				if stream.Width > 0 && stream.Height > 0 {
 					video.Resolution = fmt.Sprintf("%dx%d", stream.Width, stream.Height)
 				}
+				// 解析帧率 (格式如 "30000/1001" 或 "30/1")
+				video.FrameRate = parseFrameRate(stream.RFrameRate)
+				if video.FrameRate == 0 {
+					video.FrameRate = parseFrameRate(stream.AvgFrameRate)
+				}
+				// 解析总帧数
+				if stream.NbFrames != "" {
+					video.TotalFrames, _ = strconv.ParseInt(stream.NbFrames, 10, 64)
+				}
+				// 如果没有总帧数但有时长和帧率，计算总帧数
+				if video.TotalFrames == 0 && video.Duration > 0 && video.FrameRate > 0 {
+					video.TotalFrames = int64(video.Duration * video.FrameRate)
+				}
 			}
 		case "audio":
 			if video.AudioIndex == -1 {
@@ -344,6 +399,27 @@ func (t *Transcoder) probeVideo(path string) (*VideoFile, error) {
 	}
 
 	return video, nil
+}
+
+// parseFrameRate 解析帧率字符串 (如 "30000/1001" -> 29.97)
+func parseFrameRate(frameRateStr string) float64 {
+	if frameRateStr == "" || frameRateStr == "0/0" {
+		return 0
+	}
+	parts := strings.Split(frameRateStr, "/")
+	if len(parts) == 2 {
+		num, err1 := strconv.ParseFloat(parts[0], 64)
+		den, err2 := strconv.ParseFloat(parts[1], 64)
+		if err1 == nil && err2 == nil && den > 0 {
+			return num / den
+		}
+	}
+	// 尝试直接解析为浮点数
+	rate, err := strconv.ParseFloat(frameRateStr, 64)
+	if err == nil {
+		return rate
+	}
+	return 0
 }
 
 // AddTask 添加转码任务
@@ -362,8 +438,15 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		log.Printf("[transcoder] 无法获取视频信息: %v", err)
 	}
 
+	// 分配序号（原子递增）
+	t.mu.Lock()
+	t.taskSeqCounter++
+	seqNum := t.taskSeqCounter
+	t.mu.Unlock()
+
 	task := &TranscodeTask{
 		ID:         generateTaskID(inputPath),
+		SeqNum:     seqNum,
 		InputPath:  inputPath,
 		OutputPath: outputPath,
 		Config:     config,
@@ -372,8 +455,24 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		CreatedAt:  time.Now(),
 	}
 
+	// 设置完整的视频元数据，用于全局剩余时间估算
 	if videoInfo != nil {
 		task.Duration = videoInfo.Duration
+		task.Width = videoInfo.Width
+		task.Height = videoInfo.Height
+		task.FrameRate = videoInfo.FrameRate
+		task.TotalFrames = videoInfo.TotalFrames
+
+		// 计算预测处理速度和总时间（用于待处理任务的剩余时间估算）
+		task.PredictedFPS = predictProcessingFPS(videoInfo.Width, videoInfo.Height)
+		if task.TotalFrames > 0 && task.PredictedFPS > 0 {
+			task.PredictedTotalTime = float64(task.TotalFrames) / task.PredictedFPS
+			task.PredictedTimeString = formatETADuration(task.PredictedTotalTime)
+		}
+
+		log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧, 预测处理时间: %s",
+			filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
+			videoInfo.FrameRate, videoInfo.TotalFrames, task.PredictedTimeString)
 	}
 
 	t.mu.Lock()
@@ -467,6 +566,27 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 		log.Printf("[transcoder] 无法获取视频信息，继续转码: %v", err)
 	}
 
+	// 设置任务的视频信息（用于进度估算）
+	if videoInfo != nil {
+		t.mu.Lock()
+		task.Width = videoInfo.Width
+		task.Height = videoInfo.Height
+		task.FrameRate = videoInfo.FrameRate
+		task.TotalFrames = videoInfo.TotalFrames
+		task.Duration = videoInfo.Duration
+
+		// 计算预测处理速度和总时间
+		task.PredictedFPS = predictProcessingFPS(videoInfo.Width, videoInfo.Height)
+		if task.TotalFrames > 0 && task.PredictedFPS > 0 {
+			task.PredictedTotalTime = float64(task.TotalFrames) / task.PredictedFPS
+			task.PredictedTimeString = formatETADuration(task.PredictedTotalTime)
+		}
+		t.mu.Unlock()
+		log.Printf("[transcoder] 视频信息: %dx%d, %.2f fps, %d 帧, %.2f 秒, 预测速度: %.1f fps, 预测时间: %s",
+			videoInfo.Width, videoInfo.Height, videoInfo.FrameRate, videoInfo.TotalFrames, videoInfo.Duration,
+			task.PredictedFPS, task.PredictedTimeString)
+	}
+
 	// 构建 FFmpeg 命令
 	args := t.buildFFmpegArgs(task, videoInfo)
 
@@ -479,6 +599,8 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 	t.mu.Lock()
 	task.Status = StatusSuccess
 	task.Progress = 100
+	task.ETASeconds = 0
+	task.ETAString = "已完成"
 	task.CompletedAt = time.Now()
 	t.mu.Unlock()
 
@@ -559,8 +681,8 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		args = append(args, customArgs...)
 	}
 
-	// 添加进度输出
-	args = append(args, "-progress", "pipe:1")
+	// 不使用 -progress pipe:1，改为直接解析 stderr 输出
+	// 这样可以避免多管��处理的复杂性和潜在阻塞问题
 
 	// 添加输出文件
 	args = append(args, task.OutputPath)
@@ -572,7 +694,7 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 // 这确保编码器参数只应用于第一个视频流，而不会影响封面流
 func normalizeVideoStreamSelectors(args []string) []string {
 	result := make([]string, len(args))
-	
+
 	// 需要处理的视频相关选项前缀
 	videoOptionPrefixes := []string{
 		"-c:v",
@@ -594,10 +716,10 @@ func normalizeVideoStreamSelectors(args []string) []string {
 		"-qp:v",
 		"-cq:v",
 	}
-	
+
 	for i, arg := range args {
 		processed := arg
-		
+
 		// 检查是否是需要处理的视频选项
 		for _, prefix := range videoOptionPrefixes {
 			// 精确匹配 "-option:v"（不是已经带数字的如 "-option:v:0"）
@@ -606,10 +728,10 @@ func normalizeVideoStreamSelectors(args []string) []string {
 				break
 			}
 		}
-		
+
 		result[i] = processed
 	}
-	
+
 	return result
 }
 
@@ -631,13 +753,8 @@ func (t *Transcoder) executeFFmpeg(task *TranscodeTask, args []string) error {
 		t.currentCmdMu.Unlock()
 	}()
 
-	// 获取 stdout 用于读取进度
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("获取 stdout 失败: %w", err)
-	}
-
-	// 获取 stderr 用于捕获错误信息
+	// 获取 stderr 用于捕获进度和错误信息
+	// 注意：不使用 -progress pipe:1，FFmpeg 的进度信息会输出到 stderr
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("获取 stderr 失败: %w", err)
@@ -649,27 +766,177 @@ func (t *Transcoder) executeFFmpeg(task *TranscodeTask, args []string) error {
 		return fmt.Errorf("启动 FFmpeg 失败: %w", err)
 	}
 
-	// 解析进度输出
-	go t.parseProgress(task, stdout)
+	// 使用 WaitGroup 确保管道读取完成后再调用 cmd.Wait()
+	var pipeWg sync.WaitGroup
+	pipeWg.Add(1)
 
-	// 捕获 stderr 输出
+	// 用于看门狗的帧数跟踪（基于实际进度而非仅有输出）
+	var lastFrameCount int64
+	var lastFrameTime time.Time
+	var frameMu sync.Mutex
+	lastFrameTime = time.Now()
+
+	// stderr 输出收集
 	var stderrOutput strings.Builder
+
+	// 解析 stderr 中的控制台风格进度输出
+	// FFmpeg 输出格式: frame= 720 fps=107 q=0.0 size=   12800kB time=00:00:24.00 bitrate=4369.1kbits/s speed=3.56x
 	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			stderrOutput.WriteString(line + "\n")
-			// 只记录包含错误关键词的行
-			if strings.Contains(strings.ToLower(line), "error") ||
-				strings.Contains(strings.ToLower(line), "invalid") ||
-				strings.Contains(strings.ToLower(line), "unrecognized") ||
-				strings.Contains(strings.ToLower(line), "option") {
-				log.Printf("[transcoder] FFmpeg stderr: %s", line)
+		defer pipeWg.Done()
+
+		// 用于解析控制台风格输出的正则表达式
+		frameRegex := regexp.MustCompile(`frame=\s*(\d+)`)
+		fpsRegex := regexp.MustCompile(`fps=\s*([\d.]+)`)
+		speedRegex := regexp.MustCompile(`speed=\s*([\d.]+)x`)
+		timeRegex := regexp.MustCompile(`time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})`)
+
+		buf := make([]byte, 4096)
+		var lineBuf strings.Builder
+
+		for {
+			n, readErr := stderr.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				stderrOutput.WriteString(chunk)
+				lineBuf.WriteString(chunk)
+
+				// 处理完整的行
+				content := lineBuf.String()
+				lines := strings.Split(content, "\r")
+
+				for i, line := range lines {
+					// 最后一个元素可能是不完整的行，保留它
+					if i == len(lines)-1 && !strings.HasSuffix(content, "\r") && !strings.HasSuffix(content, "\n") {
+						lineBuf.Reset()
+						lineBuf.WriteString(line)
+						continue
+					}
+
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+
+					// 解析帧数
+					if matches := frameRegex.FindStringSubmatch(line); len(matches) > 1 {
+						frame, _ := strconv.ParseInt(matches[1], 10, 64)
+						t.mu.Lock()
+						task.ProcessedFrame = frame
+						t.updateETA(task)
+						t.mu.Unlock()
+
+						// 更新帧数跟踪（用于看门狗）
+						frameMu.Lock()
+						if frame > lastFrameCount {
+							lastFrameCount = frame
+							lastFrameTime = time.Now()
+						}
+						frameMu.Unlock()
+					}
+
+					// 解析 FPS
+					if matches := fpsRegex.FindStringSubmatch(line); len(matches) > 1 {
+						fps, _ := strconv.ParseFloat(matches[1], 64)
+						t.mu.Lock()
+						task.CurrentFPS = fps
+						t.updateETA(task)
+						t.mu.Unlock()
+					}
+
+					// 解析时间 (格式: HH:MM:SS.ms)
+					if matches := timeRegex.FindStringSubmatch(line); len(matches) > 4 {
+						hours, _ := strconv.Atoi(matches[1])
+						minutes, _ := strconv.Atoi(matches[2])
+						seconds, _ := strconv.Atoi(matches[3])
+						ms, _ := strconv.Atoi(matches[4])
+						currentTime := float64(hours*3600+minutes*60+seconds) + float64(ms)/100.0
+
+						t.mu.Lock()
+						task.CurrentTime = currentTime
+						if task.Duration > 0 {
+							task.Progress = (currentTime / task.Duration) * 100
+							if task.Progress > 100 {
+								task.Progress = 100
+							}
+						}
+						t.mu.Unlock()
+					}
+
+					// 解析速度
+					if matches := speedRegex.FindStringSubmatch(line); len(matches) > 1 {
+						t.mu.Lock()
+						task.Speed = matches[1] + "x"
+						t.mu.Unlock()
+					}
+
+					// 检查错误关键词
+					lineLower := strings.ToLower(line)
+					if strings.Contains(lineLower, "error") ||
+						strings.Contains(lineLower, "invalid") ||
+						strings.Contains(lineLower, "unrecognized") {
+						log.Printf("[transcoder] FFmpeg: %s", line)
+					}
+				}
+
+				// 如果以换行结尾，清空缓冲区
+				if strings.HasSuffix(content, "\r") || strings.HasSuffix(content, "\n") {
+					lineBuf.Reset()
+				}
+			}
+			if readErr != nil {
+				break // EOF 或其他错误
 			}
 		}
 	}()
 
-	// 等待完成
+	// 看门狗协程 - 基于帧数变化检测 FFmpeg 卡住
+	// 如果 30 秒内帧数没有增加，认为进程卡住
+	watchdogTimeout := 30 * time.Second
+	watchdogDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-t.ctx.Done():
+				return
+			case <-ticker.C:
+				frameMu.Lock()
+				elapsed := time.Since(lastFrameTime)
+				currentFrame := lastFrameCount
+				frameMu.Unlock()
+
+				// 只有在已经开始处理帧后才检查卡住
+				if currentFrame > 0 && elapsed > watchdogTimeout {
+					log.Printf("[transcoder] 警告: FFmpeg 超过 %v 帧数无变化 (当前帧: %d)，正在终止进程",
+						watchdogTimeout, currentFrame)
+					if cmd.Process != nil {
+						cmd.Process.Kill()
+					}
+					return
+				}
+
+				// 如果还没开始处理帧，给更长的初始化时间（2分钟）
+				if currentFrame == 0 && elapsed > 2*time.Minute {
+					log.Printf("[transcoder] 警告: FFmpeg 超过 2 分钟未开始处理，正在终止进程")
+					if cmd.Process != nil {
+						cmd.Process.Kill()
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// 等待管道读取完成
+	pipeWg.Wait()
+
+	// 停止看门狗
+	close(watchdogDone)
+
+	// 等待进程完成
 	if err := cmd.Wait(); err != nil {
 		// 检查是否是取消导致的
 		if t.ctx.Err() != nil {
@@ -718,6 +985,144 @@ func (t *Transcoder) parseProgress(task *TranscodeTask, stdout io.ReadCloser) {
 	}
 }
 
+// parseProgressWithActivity 解析 FFmpeg 进度输出并更新活动时间（用于看门狗）
+// 使用帧数和 FPS 计算 ETA，而不是百分比进度
+func (t *Transcoder) parseProgressWithActivity(task *TranscodeTask, stdout io.ReadCloser, updateActivity func()) {
+	scanner := bufio.NewScanner(stdout)
+	frameRegex := regexp.MustCompile(`^frame=(\d+)`)
+	fpsRegex := regexp.MustCompile(`^fps=([\d.]+)`)
+	speedRegex := regexp.MustCompile(`^speed=([\d.]+)`)
+	timeRegex := regexp.MustCompile(`^out_time_ms=(\d+)`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 每次读取到数据都更新活动时间
+		updateActivity()
+
+		// 解析已处理帧数
+		if matches := frameRegex.FindStringSubmatch(line); len(matches) > 1 {
+			frame, _ := strconv.ParseInt(matches[1], 10, 64)
+			t.mu.Lock()
+			task.ProcessedFrame = frame
+			t.updateETA(task)
+			t.mu.Unlock()
+		}
+
+		// 解析当前处理 FPS
+		if matches := fpsRegex.FindStringSubmatch(line); len(matches) > 1 {
+			fps, _ := strconv.ParseFloat(matches[1], 64)
+			t.mu.Lock()
+			task.CurrentFPS = fps
+			t.updateETA(task)
+			t.mu.Unlock()
+		}
+
+		// 解析当前时间（用于计算进度百分比作为备用）
+		if matches := timeRegex.FindStringSubmatch(line); len(matches) > 1 {
+			timeMs, _ := strconv.ParseInt(matches[1], 10, 64)
+			currentTime := float64(timeMs) / 1000000.0 // 转换为秒
+
+			t.mu.Lock()
+			task.CurrentTime = currentTime
+			// 使用时间计算进度百分比（作为备用显示）
+			if task.Duration > 0 {
+				task.Progress = (currentTime / task.Duration) * 100
+				if task.Progress > 100 {
+					task.Progress = 100
+				}
+			}
+			t.mu.Unlock()
+		}
+
+		// 解析速度倍率
+		if matches := speedRegex.FindStringSubmatch(line); len(matches) > 1 {
+			t.mu.Lock()
+			task.Speed = strings.TrimSpace(matches[1]) + "x"
+			t.mu.Unlock()
+		}
+	}
+
+	// 检查 scanner 错误
+	if err := scanner.Err(); err != nil {
+		log.Printf("[transcoder] 读取 stdout 时发生错误: %v", err)
+	}
+}
+
+// updateETA 根据已处理帧数和当前 FPS 计算剩余时间、已用时间和进度
+// 必须在持有 t.mu 锁的情况下调用
+func (t *Transcoder) updateETA(task *TranscodeTask) {
+	// 更新已用时间
+	if !task.StartedAt.IsZero() {
+		task.ElapsedSeconds = time.Since(task.StartedAt).Seconds()
+		task.ElapsedString = formatETADuration(task.ElapsedSeconds)
+	}
+
+	// 基于帧数更新进度（而不是时间）
+	if task.TotalFrames > 0 && task.ProcessedFrame > 0 {
+		task.Progress = float64(task.ProcessedFrame) / float64(task.TotalFrames) * 100
+		if task.Progress > 100 {
+			task.Progress = 100
+		}
+	}
+
+	// 需要有总帧数和当前 FPS 才能计算 ETA
+	if task.TotalFrames <= 0 || task.CurrentFPS <= 0 {
+		task.ETAString = "计算中..."
+		return
+	}
+
+	remainingFrames := task.TotalFrames - task.ProcessedFrame
+	if remainingFrames <= 0 {
+		task.ETASeconds = 0
+		task.ETAString = "即将完成"
+		return
+	}
+
+	// ETA = 剩余帧数 / 当前 FPS
+	etaSeconds := float64(remainingFrames) / task.CurrentFPS
+	task.ETASeconds = etaSeconds
+
+	// 格式化 ETA 字符串
+	task.ETAString = formatETADuration(etaSeconds)
+}
+
+// formatETADuration 格式化剩余时间为人类可读字符串
+func formatETADuration(seconds float64) string {
+	if seconds <= 0 {
+		return "即将完成"
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%.0f 秒", seconds)
+	}
+	if seconds < 3600 {
+		minutes := int(seconds) / 60
+		secs := int(seconds) % 60
+		return fmt.Sprintf("%d 分 %d 秒", minutes, secs)
+	}
+	hours := int(seconds) / 3600
+	minutes := (int(seconds) % 3600) / 60
+	return fmt.Sprintf("%d 小时 %d 分", hours, minutes)
+}
+
+// predictProcessingFPS 基于分辨率预测处理速度
+// 基准：1080p → 112帧/s，分辨率越低速度越快
+func predictProcessingFPS(width, height int) float64 {
+	baseFPS := 112.0              // 1080p的基准处理速度
+	basePixels := 1920.0 * 1080.0 // 1080p像素数
+
+	if width <= 0 || height <= 0 {
+		return baseFPS // 无法获取分辨率时使用基准值
+	}
+
+	currentPixels := float64(width * height)
+
+	// 像素比例影响（像素越少越快）
+	pixelRatio := basePixels / currentPixels
+
+	return baseFPS * pixelRatio
+}
+
 // GetTask 获取任务状态
 func (t *Transcoder) GetTask(taskID string) (*TranscodeTask, error) {
 	t.mu.RLock()
@@ -730,7 +1135,7 @@ func (t *Transcoder) GetTask(taskID string) (*TranscodeTask, error) {
 	return task, nil
 }
 
-// GetAllTasks 获取所有任务
+// GetAllTasks 获取所有任务（按添加顺序排序，新任务在后）
 func (t *Transcoder) GetAllTasks() []*TranscodeTask {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -739,6 +1144,12 @@ func (t *Transcoder) GetAllTasks() []*TranscodeTask {
 	for _, task := range t.tasks {
 		tasks = append(tasks, task)
 	}
+
+	// 按 SeqNum 排序，确保按添加顺序返回
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].SeqNum < tasks[j].SeqNum
+	})
+
 	return tasks
 }
 
@@ -801,4 +1212,59 @@ func (t *Transcoder) CancelAll() {
 		t.CancelTask(id)
 	}
 	log.Println("[transcoder] 已取消所有任务")
+}
+
+// GlobalStatus 全局状态信息
+type GlobalStatus struct {
+	TotalRemainingSeconds float64 `json:"totalRemainingSeconds"` // 总剩余时间（秒）
+	TotalRemainingString  string  `json:"totalRemainingString"`  // 总剩余时间格式化
+	PendingCount          int     `json:"pendingCount"`          // 待处理任务数
+	ProcessingCount       int     `json:"processingCount"`       // 处理中任务数
+}
+
+// GetGlobalStatus 获取全局状态，包括所有待处理任务的预估总剩余时间
+func (t *Transcoder) GetGlobalStatus() GlobalStatus {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	var totalRemaining float64
+	var pendingCount, processingCount int
+
+	for _, task := range t.tasks {
+		switch task.Status {
+		case StatusPending:
+			pendingCount++
+			// 使用预测时间（基于分辨率）
+			if task.PredictedTotalTime > 0 {
+				totalRemaining += task.PredictedTotalTime
+			} else if task.TotalFrames > 0 {
+				// 如果没有预测时间，使用基准速度估算
+				predictedFPS := predictProcessingFPS(task.Width, task.Height)
+				totalRemaining += float64(task.TotalFrames) / predictedFPS
+			}
+
+		case StatusProcessing:
+			processingCount++
+			// 加上当前处理中任务的剩余时间
+			if task.ETASeconds > 0 {
+				totalRemaining += task.ETASeconds
+			} else if task.TotalFrames > 0 && task.ProcessedFrame > 0 {
+				// 如果有帧数信息，基于当前进度估算
+				remainingFrames := task.TotalFrames - task.ProcessedFrame
+				if task.CurrentFPS > 0 {
+					totalRemaining += float64(remainingFrames) / task.CurrentFPS
+				} else {
+					predictedFPS := predictProcessingFPS(task.Width, task.Height)
+					totalRemaining += float64(remainingFrames) / predictedFPS
+				}
+			}
+		}
+	}
+
+	return GlobalStatus{
+		TotalRemainingSeconds: totalRemaining,
+		TotalRemainingString:  formatETADuration(totalRemaining),
+		PendingCount:          pendingCount,
+		ProcessingCount:       processingCount,
+	}
 }
