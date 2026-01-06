@@ -594,10 +594,17 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		outputExt = ".mkv"
 	}
 
+	// 从全局配置获取帧率上限设置
+	var maxFPS float64
+	if a.config != nil {
+		maxFPS = a.config.Transcode.MaxFPS
+	}
+
 	config := transcoder.TranscodeConfig{
 		CustomArgs:            req.Params,
 		OutputExt:             outputExt,
 		DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
+		MaxFPS:                maxFPS,
 	}
 
 	taskCount := 0

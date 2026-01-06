@@ -68,6 +68,9 @@ type TranscodeConfig struct {
 	OutputDir string `yaml:"output_dir"`
 	// 转码完成后是否删除源文件
 	DeleteSource bool `yaml:"delete_source"`
+	// 帧率上限（0 或空表示不限制）
+	// 支持的值: 24, 25, 29.97, 30, 50, 59.94, 60 或自定义值
+	MaxFPS float64 `yaml:"max_fps"`
 }
 
 // Load 从指定路径加载配置文件
@@ -123,6 +126,7 @@ func Default() *Config {
 			MaxConcurrent: 1,
 			OutputDir:     "",
 			DeleteSource:  false,
+			MaxFPS:        0, // 0 表示不限制帧率
 		},
 	}
 }

@@ -19,7 +19,7 @@ param(
 $ProjectName = "bililive-recorder-autoarchive"
 $OutputDir = "build"
 $Version = git describe --tags --always 2>$null
-if (-not $Version) { $Version = "dev" }
+if (-not $Version) { $Version = "dev.0.2.2" }
 $BuildTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 # 构建参数

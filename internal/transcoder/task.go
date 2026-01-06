@@ -18,39 +18,39 @@ const (
 
 // TranscodeTask 转码任务
 type TranscodeTask struct {
-	ID          string          // 任务ID
-	SeqNum      int64           // 任务序号，用于排序（按添加顺序）
-	InputPath   string          // 输入文件路径
-	OutputPath  string          // 输出文件路径
-	Config      TranscodeConfig // 转码配置
-	Status      TaskStatus      // 任务状态
-	Progress    float64         // 进度 (0-100)，基于已处理帧数/总帧数
-	Duration    float64         // 视频总时长（秒）
-	CurrentTime float64         // 当前处理时间（秒）
-	Speed       string          // 处理速度字符串（如 "1.5x"）
-	Error       string          // 错误信息（包含 FFmpeg 详细输出）
-	CreatedAt   time.Time       // 创建时间
-	StartedAt   time.Time       // 开始时间
-	CompletedAt time.Time       // 完成时间
+	ID          string          `json:"id"`          // 任务ID
+	SeqNum      int64           `json:"seqNum"`      // 任务序号，用于排序（按添加顺序）
+	InputPath   string          `json:"inputFile"`   // 输入文件路径
+	OutputPath  string          `json:"outputPath"`  // 输出文件路径
+	Config      TranscodeConfig `json:"config"`      // 转码配置
+	Status      TaskStatus      `json:"status"`      // 任务状态
+	Progress    float64         `json:"progress"`    // 进度 (0-100)，基于已处理帧数/总帧数
+	Duration    float64         `json:"duration"`    // 视频总时长（秒）
+	CurrentTime float64         `json:"currentTime"` // 当前处理时间（秒）
+	Speed       string          `json:"speed"`       // 处理速度字符串（如 "1.5x"）
+	Error       string          `json:"error"`       // 错误信息（包含 FFmpeg 详细输出）
+	CreatedAt   time.Time       `json:"createdAt"`   // 创建时间
+	StartedAt   time.Time       `json:"startedAt"`   // 开始时间
+	CompletedAt time.Time       `json:"completedAt"` // 完成时间
 
 	// 已用时间
-	ElapsedSeconds float64 // 已用时间（秒）
-	ElapsedString  string  // 已用时间格式化（如"5分32秒"）
+	ElapsedSeconds float64 `json:"elapsedSeconds"` // 已用时间（秒）
+	ElapsedString  string  `json:"elapsedString"`  // 已用时间格式化（如"5分32秒"）
 
 	// 基于像素处理速度的进度估算字段
-	Width          int     // 视频宽度
-	Height         int     // 视频高度
-	FrameRate      float64 // 视频帧率
-	TotalFrames    int64   // 总帧数
-	ProcessedFrame int64   // 已处理帧数
-	CurrentFPS     float64 // 当前处理速度（帧/秒）
-	ETASeconds     float64 // 预计剩余时间（秒）
-	ETAString      string  // 预计剩余时间（格式化字符串）
+	Width          int     `json:"width"`          // 视频宽度
+	Height         int     `json:"height"`         // 视频高度
+	FrameRate      float64 `json:"frameRate"`      // 视频帧率
+	TotalFrames    int64   `json:"totalFrames"`    // 总帧数
+	ProcessedFrame int64   `json:"processedFrame"` // 已处理帧数
+	CurrentFPS     float64 `json:"currentFPS"`     // 当前处理速度（帧/秒）
+	ETASeconds     float64 `json:"etaSeconds"`     // 预计剩余时间（秒）
+	ETAString      string  `json:"etaString"`      // 预计剩余时间（格式化字符串）
 
 	// 智能预测
-	PredictedFPS        float64 // 预测的处理速度（帧/秒），基于分辨率和帧率
-	PredictedTotalTime  float64 // 预测的总处理时间（秒）
-	PredictedTimeString string  // 预测的总处理时间格式化字符串
+	PredictedFPS        float64 `json:"predictedFPS"`        // 预测的处理速度（帧/秒），基于分辨率和帧率
+	PredictedTotalTime  float64 `json:"predictedTotalTime"`  // 预测的总处理时间（秒）
+	PredictedTimeString string  `json:"predictedTimeString"` // 预测的总处理时间格式化字符串
 }
 
 // TranscodeConfig 用户自定义的转码参数
@@ -70,6 +70,11 @@ type TranscodeConfig struct {
 
 	// DeleteSourceOnSuccess 转码成功后是否删除源文件
 	DeleteSourceOnSuccess bool `json:"delete_source_on_success" yaml:"delete_source_on_success"`
+
+	// MaxFPS 帧率上限，0 表示不限制
+	// 当源视频帧率高于此值时，会应用 fps 过滤器降低帧率
+	// 无论此值为多少，均会启用可变帧率（VFR）模式
+	MaxFPS float64 `json:"max_fps" yaml:"max_fps"`
 }
 
 // VideoFile 扫描到的视频文件信息

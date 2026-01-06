@@ -101,7 +101,9 @@ type ffprobeFormat struct {
 // 如果提供了封面图片，会将其作为附加图片写入 MKV
 func (f *DefaultFFmpeg) Remux(ctx context.Context, input, output string, opts *RemuxOptions) error {
 	args := []string{
-		"-y",        // 覆盖输出文件
+		"-y",                        // 覆盖输出文件
+		"-fflags", "+genpts+igndts", // 重新生成 PTS 并忽略损坏的 DTS
+		"-avoid_negative_ts", "make_zero", // 处理负时间戳
 		"-i", input, // 输入文件
 	}
 

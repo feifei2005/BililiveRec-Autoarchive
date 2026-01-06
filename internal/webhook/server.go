@@ -66,6 +66,7 @@ type Config struct {
 	WebhookPath  string        // Webhook 路径
 	DedupeWindow time.Duration // 去重时间窗口，超过此时间的 EventId 会被清理
 	InputDir     string        // 录播姬工作目录，用于拼接完整路径
+	MaxFPS       float64       // 帧率上限，0 表示不限制
 }
 
 // New 创建新的 Webhook 服务器实例
@@ -374,6 +375,7 @@ func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
 		CustomArgs: req.CustomArgs,
 		OutputDir:  req.OutputDir,
 		OutputExt:  req.OutputExt,
+		MaxFPS:     s.config.MaxFPS,
 	}
 
 	for _, file := range req.Files {

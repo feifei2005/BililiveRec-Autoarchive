@@ -1882,3 +1882,40 @@ body {
         font-size: 2rem;
     }
 }
+
+/* ==================== Combobox 帧率上限控件样式 ==================== */
+
+/* Combobox 容器 */
+.combobox-container {
+    position: relative;
+    width: 100%;
+}
+
+/* Combobox 输入框 */
+.combobox-input {
+    width: 100%;
+    padding-right: 2rem; /* 为下拉箭头留空间 */
+}
+
+/* 为 datalist 的下拉箭头添加视觉提示 */
+.combobox-input::-webkit-calendar-picker-indicator {
+    opacity: 0.6;
+    cursor: pointer;
+}
+
+.combobox-input::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
+
+/* 当输入框聚焦时的样式 */
+.combobox-input:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .combobox-container {
+        width: 100%;
+    }
+}

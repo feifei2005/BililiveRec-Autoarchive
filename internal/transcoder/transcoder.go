@@ -514,8 +514,8 @@ func (t *Transcoder) buildOutputPath(inputPath string, config TranscodeConfig) s
 		ext = "." + ext
 	}
 
-	// 输出文件名：原文件名_transcoded.扩展名
-	return filepath.Join(outputDir, nameWithoutExt+"_transcoded"+ext)
+	// 输出文件名：保持原文件名，只替换扩展名
+	return filepath.Join(outputDir, nameWithoutExt+ext)
 }
 
 // inferOutputExt 从 FFmpeg 参数推断输出扩展名
@@ -645,6 +645,19 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 	// 解析用户自定义参数
 	customArgs := strings.Fields(task.Config.CustomArgs)
 
+	// 构建帧率限制过滤器（如果需要）
+	// 仅当 MaxFPS > 0 且源视频帧率大于 MaxFPS 时才添加
+	var fpsFilter string
+	if task.Config.MaxFPS > 0 && videoInfo != nil && videoInfo.FrameRate > task.Config.MaxFPS {
+		fpsFilter = fmt.Sprintf("fps=fps=%v", task.Config.MaxFPS)
+		log.Printf("[transcoder] 应用帧率限制: 源 %.2f fps -> 目标 %.2f fps", videoInfo.FrameRate, task.Config.MaxFPS)
+	}
+
+	// 如果有帧率过滤器，需要与用户的 -vf 参数合并
+	if fpsFilter != "" {
+		customArgs = mergeVideoFilter(customArgs, fpsFilter)
+	}
+
 	// 检查是否有封面流，并且用户没有禁用封面处理
 	hasCover := videoInfo != nil && videoInfo.HasCover && videoInfo.CoverIndex >= 0
 
@@ -682,12 +695,44 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 	}
 
 	// 不使用 -progress pipe:1，改为直接解析 stderr 输出
-	// 这样可以避免多管��处理的复杂性和潜在阻塞问题
+	// 这样可以避免多管道处理的复杂性和潜在阻塞问题
 
 	// 添加输出文件
 	args = append(args, task.OutputPath)
 
 	return args
+}
+
+// mergeVideoFilter 将新的视频过滤器与现有的 -vf 参数合并
+// 如果 customArgs 中已存在 -vf，则在其值后追加新过滤器（用逗号分隔）
+// 如果不存在，则添加新的 -vf 参数
+func mergeVideoFilter(customArgs []string, newFilter string) []string {
+	result := make([]string, 0, len(customArgs)+2)
+	vfFound := false
+
+	for i := 0; i < len(customArgs); i++ {
+		if customArgs[i] == "-vf" || customArgs[i] == "-filter:v" {
+			vfFound = true
+			result = append(result, customArgs[i])
+			if i+1 < len(customArgs) {
+				// 合并现有过滤器和新过滤器
+				result = append(result, customArgs[i+1]+","+newFilter)
+				i++ // 跳过下一个参数（过滤器值）
+			} else {
+				// -vf 后面没有值，直接使用新过滤器
+				result = append(result, newFilter)
+			}
+		} else {
+			result = append(result, customArgs[i])
+		}
+	}
+
+	// 如果没有找到 -vf 参数，添加新的
+	if !vfFound {
+		result = append(result, "-vf", newFilter)
+	}
+
+	return result
 }
 
 // normalizeVideoStreamSelectors 将视频流选择器 :v 替换为 :v:0

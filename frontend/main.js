@@ -435,12 +435,28 @@ function loadFFmpegParams() {
     return localStorage.getItem('ffmpegParams') || DEFAULT_FFMPEG_PARAMS;
 }
 
+// 保存帧率上限到 localStorage
+function saveMaxFps(value) {
+    localStorage.setItem('maxFps', value);
+}
+
+// 从 localStorage 加载帧率上限
+function loadMaxFps() {
+    return localStorage.getItem('maxFps') || '不限制';
+}
+
 // 加载转码页面
 async function loadTranscodePage() {
     // 恢复保存的 FFmpeg 参数
     const paramsInput = document.getElementById('ffmpeg-params');
     if (paramsInput && !paramsInput.value) {
         paramsInput.value = loadFFmpegParams();
+    }
+    
+    // 恢复保存的帧率上限
+    const maxFpsInput = document.getElementById('max-fps');
+    if (maxFpsInput && !maxFpsInput.value) {
+        maxFpsInput.value = loadMaxFps();
     }
     
     // 加载转码任务列表
@@ -534,8 +550,19 @@ async function startTranscode() {
     const preserveCover = document.getElementById('preserve-cover').checked;
     const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
     
+    // 解析帧率上限
+    const maxFpsInput = document.getElementById('max-fps').value.trim();
+    let maxFps = 0; // 0 表示不限制
+    if (maxFpsInput && maxFpsInput !== '不限制') {
+        const parsed = parseFloat(maxFpsInput);
+        if (!isNaN(parsed) && parsed > 0) {
+            maxFps = parsed;
+        }
+    }
+    
     // 保存 FFmpeg 参数到 localStorage
     saveFFmpegParams(params);
+    saveMaxFps(maxFpsInput);
     
     try {
         showToast('正在添加转码任务...', 'info');
@@ -544,7 +571,8 @@ async function startTranscode() {
             params: params,
             format: format,
             preserveCover: preserveCover,
-            deleteSourceOnSuccess: deleteSourceOnSuccess
+            deleteSourceOnSuccess: deleteSourceOnSuccess,
+            maxFps: maxFps
         });
         
         if (result.success) {
@@ -912,6 +940,50 @@ function initTranscodeEvents() {
     
     // 初始化拖拽区域
     initDropZone();
+    
+    // 初始化帧率上限输入框交互
+    initMaxFpsInput();
+}
+
+// 初始化帧率上限输入框交互
+function initMaxFpsInput() {
+    const maxFpsInput = document.getElementById('max-fps');
+    if (!maxFpsInput) return;
+    
+    // 监听输入变化，处理"自定义"和"不限制"选项
+    maxFpsInput.addEventListener('input', function(e) {
+        const value = e.target.value;
+        
+        // 如果选择了"自定义"，清空输入框并聚焦
+        if (value === '自定义') {
+            e.target.value = '';
+            e.target.placeholder = '请输入帧率值';
+            e.target.focus();
+        } else if (value === '不限制') {
+            e.target.placeholder = '不限制';
+        }
+    });
+    
+    // 失去焦点时验证输入
+    maxFpsInput.addEventListener('blur', function(e) {
+        const value = e.target.value.trim();
+        
+        // 如果输入为空，恢复为"不限制"
+        if (value === '' || value === '自定义') {
+            e.target.value = '不限制';
+            e.target.placeholder = '不限制';
+        } else if (value !== '不限制') {
+            // 验证是否为有效数字
+            const parsed = parseFloat(value);
+            if (isNaN(parsed) || parsed < 0) {
+                showToast('帧率必须是正数', 'warning');
+                e.target.value = '不限制';
+            } else if (parsed === 0) {
+                // 0 表示不限制
+                e.target.value = '不限制';
+            }
+        }
+    });
 }
 
 // ==================== 拖拽导入功能 ====================
@@ -1077,6 +1149,31 @@ if (document.readyState === 'loading') {
 // 页面卸载时停止刷新
 window.addEventListener('beforeunload', () => {
     stopAutoRefresh();
+});
+
+// 页面可见性变化处理（从后台切换回前台时刷新数据）
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        // 页面从后台切换到前台
+        console.log('页面恢复可见，刷新数据...');
+        
+        // 根据当前页面刷新对应数据
+        switch (state.currentPage) {
+            case 'status':
+                loadStatusPage();
+                break;
+            case 'tasks':
+                loadTasksPage();
+                break;
+            case 'transcode':
+                loadTranscodeTasks();
+                // 如果有活跃任务且未在轮询，重新启动轮询
+                if (!transcodeState.isPolling) {
+                    startTranscodePolling();
+                }
+                break;
+        }
+    }
 });
 
 // ==================== 退出确认弹窗 ====================

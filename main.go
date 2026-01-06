@@ -225,6 +225,7 @@ func (a *Application) Initialize() error {
 		Port:        a.config.Server.Port,
 		WebhookPath: a.config.Server.WebhookPath,
 		InputDir:    a.config.Processing.InputDir,
+		MaxFPS:      a.config.Transcode.MaxFPS,
 	})
 
 	// 注册 Webhook 事件处理
