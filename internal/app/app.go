@@ -493,6 +493,62 @@ type TranscodeRequest struct {
 	Format                string   `json:"format"`
 	PreserveCover         bool     `json:"preserveCover"`
 	DeleteSourceOnSuccess bool     `json:"deleteSourceOnSuccess"`
+	MaxFPS                float64  `json:"maxFps"` // 帧率上限，0 表示不限制
+}
+
+// TranscodeSettings 转码设置（用于持久化）
+type TranscodeSettings struct {
+	Params                string  `json:"params"`
+	Format                string  `json:"format"`
+	PreserveCover         bool    `json:"preserveCover"`
+	DeleteSourceOnSuccess bool    `json:"deleteSourceOnSuccess"`
+	MaxFPS                float64 `json:"maxFps"`
+}
+
+// GetTranscodeSettings 获取保存的转码设置
+func (a *App) GetTranscodeSettings() TranscodeSettings {
+	if a.config == nil {
+		return TranscodeSettings{
+			Params:        "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k",
+			Format:        "mp4",
+			PreserveCover: true,
+		}
+	}
+
+	return TranscodeSettings{
+		Params:                a.config.Transcode.DefaultParams,
+		Format:                a.config.Transcode.DefaultFormat,
+		PreserveCover:         a.config.Transcode.PreserveCover,
+		DeleteSourceOnSuccess: a.config.Transcode.DeleteSourceOnSuccess,
+		MaxFPS:                a.config.Transcode.MaxFPS,
+	}
+}
+
+// SaveTranscodeSettings 保存转码设置到配置文件
+func (a *App) SaveTranscodeSettings(settings TranscodeSettings) error {
+	if a.config == nil {
+		return fmt.Errorf("配置未初始化")
+	}
+
+	// 更新配置
+	a.config.Transcode.DefaultParams = settings.Params
+	a.config.Transcode.DefaultFormat = settings.Format
+	a.config.Transcode.PreserveCover = settings.PreserveCover
+	a.config.Transcode.DeleteSourceOnSuccess = settings.DeleteSourceOnSuccess
+	a.config.Transcode.MaxFPS = settings.MaxFPS
+
+	// 验证和补全配置
+	a.config.FillDefaults()
+
+	// 保存到文件
+	configPath := filepath.Join(".", "config.yaml")
+	if err := a.config.Save(configPath); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	log.Printf("[app] 转码设置已保存: format=%s, maxFPS=%.2f, deleteSource=%v, preserveCover=%v",
+		settings.Format, settings.MaxFPS, settings.DeleteSourceOnSuccess, settings.PreserveCover)
+	return nil
 }
 
 // TranscodeResult 转码结果
@@ -594,11 +650,25 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		outputExt = ".mkv"
 	}
 
-	// 从全局配置获取帧率上限设置
-	var maxFPS float64
-	if a.config != nil {
-		maxFPS = a.config.Transcode.MaxFPS
-	}
+	// 使用请求中的 MaxFPS（前端传入的值优先）
+	maxFPS := req.MaxFPS
+
+	// 保存当前转码设置到配置文件（异步保存，不影响转码开始）
+	go func() {
+		settings := TranscodeSettings{
+			Params:                req.Params,
+			Format:                req.Format,
+			PreserveCover:         req.PreserveCover,
+			DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
+			MaxFPS:                maxFPS,
+		}
+		if err := a.SaveTranscodeSettings(settings); err != nil {
+			log.Printf("[app] 保存转码设置失败: %v", err)
+		}
+	}()
+
+	log.Printf("[app] 开始转码: files=%d, format=%s, maxFPS=%.2f, deleteSource=%v",
+		len(req.Files), req.Format, maxFPS, req.DeleteSourceOnSuccess)
 
 	config := transcoder.TranscodeConfig{
 		CustomArgs:            req.Params,

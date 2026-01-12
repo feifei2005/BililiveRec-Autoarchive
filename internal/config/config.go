@@ -71,6 +71,10 @@ type TranscodeConfig struct {
 	// 帧率上限（0 或空表示不限制）
 	// 支持的值: 24, 25, 29.97, 30, 50, 59.94, 60 或自定义值
 	MaxFPS float64 `yaml:"max_fps"`
+	// 是否保留封面
+	PreserveCover bool `yaml:"preserve_cover"`
+	// 转码成功后删除源文件
+	DeleteSourceOnSuccess bool `yaml:"delete_source_on_success"`
 }
 
 // Load 从指定路径加载配置文件
@@ -121,12 +125,14 @@ func Default() *Config {
 			CustomArgs:  []string{"-c", "copy"},
 		},
 		Transcode: TranscodeConfig{
-			DefaultFormat: "mp4",
-			DefaultParams: "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k",
-			MaxConcurrent: 1,
-			OutputDir:     "",
-			DeleteSource:  false,
-			MaxFPS:        0, // 0 表示不限制帧率
+			DefaultFormat:         "mp4",
+			DefaultParams:         "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k",
+			MaxConcurrent:         1,
+			OutputDir:             "",
+			DeleteSource:          false,
+			MaxFPS:                0, // 0 表示不限制帧率
+			PreserveCover:         true,
+			DeleteSourceOnSuccess: false,
 		},
 	}
 }
@@ -148,4 +154,59 @@ func (c *Config) Validate() error {
 	// - 检查端口号是否有效
 	// - 检查正则表达式是否合法
 	return nil
+}
+
+// FillDefaults 补全缺失的配置字段为默认值
+// 这个函数在加载配置后调用，确保所有必要字段都有合理的值
+func (c *Config) FillDefaults() {
+	defaults := Default()
+
+	// 补全 Server 配置
+	if c.Server.Port <= 0 || c.Server.Port > 65535 {
+		c.Server.Port = defaults.Server.Port
+	}
+	if c.Server.WebhookPath == "" {
+		c.Server.WebhookPath = defaults.Server.WebhookPath
+	}
+
+	// 补全 Processing 配置
+	if c.Processing.MaxConcurrent <= 0 {
+		c.Processing.MaxConcurrent = defaults.Processing.MaxConcurrent
+	}
+	if c.Processing.MinFileSizeKB < 0 {
+		c.Processing.MinFileSizeKB = defaults.Processing.MinFileSizeKB
+	}
+	if c.Processing.ConflictMode == "" {
+		c.Processing.ConflictMode = defaults.Processing.ConflictMode
+	}
+	if c.Processing.ScanIntervalMin <= 0 {
+		c.Processing.ScanIntervalMin = defaults.Processing.ScanIntervalMin
+	}
+
+	// 补全 FFmpeg 配置
+	if c.FFmpeg.Path == "" {
+		c.FFmpeg.Path = defaults.FFmpeg.Path
+	}
+	if c.FFmpeg.FFprobePath == "" {
+		c.FFmpeg.FFprobePath = defaults.FFmpeg.FFprobePath
+	}
+
+	// 补全 Transcode 配置
+	if c.Transcode.DefaultFormat == "" {
+		c.Transcode.DefaultFormat = defaults.Transcode.DefaultFormat
+	}
+	// 验证输出格式是否有效
+	if c.Transcode.DefaultFormat != "mp4" && c.Transcode.DefaultFormat != "mkv" {
+		c.Transcode.DefaultFormat = defaults.Transcode.DefaultFormat
+	}
+	if c.Transcode.DefaultParams == "" {
+		c.Transcode.DefaultParams = defaults.Transcode.DefaultParams
+	}
+	if c.Transcode.MaxConcurrent <= 0 {
+		c.Transcode.MaxConcurrent = defaults.Transcode.MaxConcurrent
+	}
+	// 验证帧率上限是否有效（负数无效）
+	if c.Transcode.MaxFPS < 0 {
+		c.Transcode.MaxFPS = 0
+	}
 }

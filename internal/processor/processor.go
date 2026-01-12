@@ -239,20 +239,46 @@ func (p *DefaultProcessor) AddTask(path string) error {
 		absPath = path
 	}
 
+	// 生成任务ID
+	taskID := generateTaskID(absPath)
+
 	// 检查是否已在处理中（去重）
 	if _, loaded := p.pendingPaths.LoadOrStore(absPath, time.Now()); loaded {
 		log.Printf("跳过重复任务: %s", absPath)
 		return nil
 	}
 
+	// 创建 pending 状态的任务对象，使其能在前端「待处理」列表中显示
+	now := time.Now()
+	task := &Task{
+		ID:        taskID,
+		InputPath: absPath,
+		Status:    StatusPending,
+		Progress:  0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	// 尝试解析主播名称（从父目录）
+	dir := filepath.Dir(absPath)
+	streamerDir := filepath.Base(dir)
+	task.StreamerName = parseStreamerNameFromDir(streamerDir)
+
+	p.mu.Lock()
+	p.tasks[taskID] = task
+	p.mu.Unlock()
+
 	// 加入队列
 	select {
 	case p.pathQueue <- absPath:
-		log.Printf("任务已加入队列: %s", absPath)
+		log.Printf("任务已加入队列: %s (ID: %s)", absPath, taskID)
 		return nil
 	default:
-		// 队列满了，从去重 map 中移除
+		// 队列满了，从去重 map 和 tasks 中移除
 		p.pendingPaths.Delete(absPath)
+		p.mu.Lock()
+		delete(p.tasks, taskID)
+		p.mu.Unlock()
 		return ErrQueueFull
 	}
 }
@@ -314,19 +340,28 @@ func (p *DefaultProcessor) processPath(path string) {
 	startTime := time.Now()
 	log.Printf("开始处理文件: %s", path)
 
-	// 创建任务对象并加入任务列表
+	// 查找或创建任务对象
 	taskID := generateTaskID(path)
-	task := &Task{
-		ID:        taskID,
-		InputPath: path,
-		Status:    StatusProcessing,
-		Progress:  0,
-		CreatedAt: startTime,
-		UpdatedAt: startTime,
-	}
+	var task *Task
 
 	p.mu.Lock()
-	p.tasks[taskID] = task
+	if existingTask, ok := p.tasks[taskID]; ok {
+		// 任务已存在（由 AddTask 创建的 pending 任务），更新状态
+		task = existingTask
+		task.Status = StatusProcessing
+		task.UpdatedAt = startTime
+	} else {
+		// 任务不存在，创建新任务（兼容旧的 Submit 方式）
+		task = &Task{
+			ID:        taskID,
+			InputPath: path,
+			Status:    StatusProcessing,
+			Progress:  0,
+			CreatedAt: startTime,
+			UpdatedAt: startTime,
+		}
+		p.tasks[taskID] = task
+	}
 	p.mu.Unlock()
 
 	// 辅助函数：更新任务状态

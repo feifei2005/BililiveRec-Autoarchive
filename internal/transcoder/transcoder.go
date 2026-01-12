@@ -464,15 +464,24 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		task.TotalFrames = videoInfo.TotalFrames
 
 		// 计算预测处理速度和总时间（用于待处理任务的剩余时间估算）
+		// 考虑帧率上限：如果设置了 MaxFPS 且源帧率超过上限，使用有效帧数估算
 		task.PredictedFPS = predictProcessingFPS(videoInfo.Width, videoInfo.Height)
-		if task.TotalFrames > 0 && task.PredictedFPS > 0 {
-			task.PredictedTotalTime = float64(task.TotalFrames) / task.PredictedFPS
+		effectiveFrames := getEffectiveFrames(task)
+		if effectiveFrames > 0 && task.PredictedFPS > 0 {
+			task.PredictedTotalTime = float64(effectiveFrames) / task.PredictedFPS
 			task.PredictedTimeString = formatETADuration(task.PredictedTotalTime)
 		}
 
-		log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧, 预测处理时间: %s",
-			filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
-			videoInfo.FrameRate, videoInfo.TotalFrames, task.PredictedTimeString)
+		// 日志中显示源帧数和有效帧数（如果不同）
+		if effectiveFrames != task.TotalFrames && effectiveFrames > 0 {
+			log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧 (限帧后 %d 帧), 预测处理时间: %s",
+				filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
+				videoInfo.FrameRate, videoInfo.TotalFrames, effectiveFrames, task.PredictedTimeString)
+		} else {
+			log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧, 预测处理时间: %s",
+				filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
+				videoInfo.FrameRate, videoInfo.TotalFrames, task.PredictedTimeString)
+		}
 	}
 
 	t.mu.Lock()
@@ -546,6 +555,15 @@ func (t *Transcoder) inferOutputExt(args string) string {
 
 // processTask 处理单个转码任务
 func (t *Transcoder) processTask(task *TranscodeTask) {
+	// 检查任务是否已被取消（用户可能在任务等待队列期间取消了它）
+	t.mu.RLock()
+	if task.Status == StatusCancelled {
+		t.mu.RUnlock()
+		log.Printf("[transcoder] 任务已取消，跳过处理: %s", task.InputPath)
+		return
+	}
+	t.mu.RUnlock()
+
 	log.Printf("[transcoder] 开始处理任务: %s", task.InputPath)
 
 	t.mu.Lock()
@@ -575,16 +593,23 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 		task.TotalFrames = videoInfo.TotalFrames
 		task.Duration = videoInfo.Duration
 
-		// 计算预测处理速度和总时间
+		// 计算预测处理速度和总时间（考虑帧率上限）
 		task.PredictedFPS = predictProcessingFPS(videoInfo.Width, videoInfo.Height)
-		if task.TotalFrames > 0 && task.PredictedFPS > 0 {
-			task.PredictedTotalTime = float64(task.TotalFrames) / task.PredictedFPS
+		effectiveFrames := getEffectiveFrames(task)
+		if effectiveFrames > 0 && task.PredictedFPS > 0 {
+			task.PredictedTotalTime = float64(effectiveFrames) / task.PredictedFPS
 			task.PredictedTimeString = formatETADuration(task.PredictedTotalTime)
 		}
 		t.mu.Unlock()
-		log.Printf("[transcoder] 视频信息: %dx%d, %.2f fps, %d 帧, %.2f 秒, 预测速度: %.1f fps, 预测时间: %s",
-			videoInfo.Width, videoInfo.Height, videoInfo.FrameRate, videoInfo.TotalFrames, videoInfo.Duration,
-			task.PredictedFPS, task.PredictedTimeString)
+		if effectiveFrames != videoInfo.TotalFrames && effectiveFrames > 0 {
+			log.Printf("[transcoder] 视频信息: %dx%d, %.2f fps, %d 帧 (限帧后 %d 帧), %.2f 秒, 预测速度: %.1f fps, 预测时间: %s",
+				videoInfo.Width, videoInfo.Height, videoInfo.FrameRate, videoInfo.TotalFrames, effectiveFrames, videoInfo.Duration,
+				task.PredictedFPS, task.PredictedTimeString)
+		} else {
+			log.Printf("[transcoder] 视频信息: %dx%d, %.2f fps, %d 帧, %.2f 秒, 预测速度: %.1f fps, 预测时间: %s",
+				videoInfo.Width, videoInfo.Height, videoInfo.FrameRate, videoInfo.TotalFrames, videoInfo.Duration,
+				task.PredictedFPS, task.PredictedTimeString)
+		}
 	}
 
 	// 构建 FFmpeg 命令
@@ -646,11 +671,29 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 	customArgs := strings.Fields(task.Config.CustomArgs)
 
 	// 构建帧率限制过滤器（如果需要）
-	// 仅当 MaxFPS > 0 且源视频帧率大于 MaxFPS 时才添加
+	// 使用 task.FrameRate（在 AddTask 时获取的源帧率）进行比较
+	// 仅当 MaxFPS > 0 且源视频帧率大于 MaxFPS 时才添加帧率限制
 	var fpsFilter string
-	if task.Config.MaxFPS > 0 && videoInfo != nil && videoInfo.FrameRate > task.Config.MaxFPS {
-		fpsFilter = fmt.Sprintf("fps=fps=%v", task.Config.MaxFPS)
-		log.Printf("[transcoder] 应用帧率限制: 源 %.2f fps -> 目标 %.2f fps", videoInfo.FrameRate, task.Config.MaxFPS)
+	sourceFPS := task.FrameRate
+	// 如果任务中没有帧率信息，尝试从 videoInfo 获取
+	if sourceFPS <= 0 && videoInfo != nil {
+		sourceFPS = videoInfo.FrameRate
+	}
+
+	if task.Config.MaxFPS > 0 {
+		if sourceFPS > 0 {
+			if sourceFPS > task.Config.MaxFPS {
+				// 源帧率高于设定上限，应用帧率限制
+				fpsFilter = fmt.Sprintf("fps=fps=%v", task.Config.MaxFPS)
+				log.Printf("[transcoder] 应用帧率限制: 源 %.2f fps > 目标 %.2f fps，将降低帧率", sourceFPS, task.Config.MaxFPS)
+			} else {
+				// 源帧率低于或等于设定上限，不需要限制
+				log.Printf("[transcoder] 不需要帧率限制: 源 %.2f fps <= 设定上限 %.2f fps", sourceFPS, task.Config.MaxFPS)
+			}
+		} else {
+			// 无法获取源帧率，为安全起见不应用帧率限制
+			log.Printf("[transcoder] 警告: 无法获取源帧率，跳过帧率限制 (设定上限: %.2f fps)", task.Config.MaxFPS)
+		}
 	}
 
 	// 如果有帧率过滤器，需要与用户的 -vf 参数合并
@@ -705,15 +748,18 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 
 // mergeVideoFilter 将新的视频过滤器与现有的 -vf 参数合并
 // 如果 customArgs 中已存在 -vf，则在其值后追加新过滤器（用逗号分隔）
-// 如果不存在，则添加新的 -vf 参数
+// 如果不存在，则添加新的 -filter:v:0 参数
+// 注意：使用 -filter:v:0 而不是 -vf，确保滤镜只应用于第一个视频流，
+// 避免与封面流（使用 copy 编码器）冲突
 func mergeVideoFilter(customArgs []string, newFilter string) []string {
 	result := make([]string, 0, len(customArgs)+2)
 	vfFound := false
 
 	for i := 0; i < len(customArgs); i++ {
-		if customArgs[i] == "-vf" || customArgs[i] == "-filter:v" {
+		if customArgs[i] == "-vf" || customArgs[i] == "-filter:v" || customArgs[i] == "-filter:v:0" {
 			vfFound = true
-			result = append(result, customArgs[i])
+			// 强制使用 -filter:v:0 确保只对第一个视频流生效
+			result = append(result, "-filter:v:0")
 			if i+1 < len(customArgs) {
 				// 合并现有过滤器和新过滤器
 				result = append(result, customArgs[i+1]+","+newFilter)
@@ -727,9 +773,9 @@ func mergeVideoFilter(customArgs []string, newFilter string) []string {
 		}
 	}
 
-	// 如果没有找到 -vf 参数，添加新的
+	// 如果没有找到 -vf 参数，添加新的 -filter:v:0
 	if !vfFound {
-		result = append(result, "-vf", newFilter)
+		result = append(result, "-filter:v:0", newFilter)
 	}
 
 	return result
@@ -1103,21 +1149,24 @@ func (t *Transcoder) updateETA(task *TranscodeTask) {
 		task.ElapsedString = formatETADuration(task.ElapsedSeconds)
 	}
 
-	// 基于帧数更新进度（而不是时间）
-	if task.TotalFrames > 0 && task.ProcessedFrame > 0 {
-		task.Progress = float64(task.ProcessedFrame) / float64(task.TotalFrames) * 100
+	// 获取考虑帧率上限后的有效帧数
+	effectiveFrames := getEffectiveFrames(task)
+
+	// 基于帧数更新进度（使用有效帧数）
+	if effectiveFrames > 0 && task.ProcessedFrame > 0 {
+		task.Progress = float64(task.ProcessedFrame) / float64(effectiveFrames) * 100
 		if task.Progress > 100 {
 			task.Progress = 100
 		}
 	}
 
-	// 需要有总帧数和当前 FPS 才能计算 ETA
-	if task.TotalFrames <= 0 || task.CurrentFPS <= 0 {
+	// 需要有有效帧数和当前 FPS 才能计算 ETA
+	if effectiveFrames <= 0 || task.CurrentFPS <= 0 {
 		task.ETAString = "计算中..."
 		return
 	}
 
-	remainingFrames := task.TotalFrames - task.ProcessedFrame
+	remainingFrames := effectiveFrames - task.ProcessedFrame
 	if remainingFrames <= 0 {
 		task.ETASeconds = 0
 		task.ETAString = "即将完成"
@@ -1166,6 +1215,15 @@ func predictProcessingFPS(width, height int) float64 {
 	pixelRatio := basePixels / currentPixels
 
 	return baseFPS * pixelRatio
+}
+
+// getEffectiveFrames 获取考虑帧率上限后的有效帧数
+// 如果设置了帧率上限且源帧率超过上限，则按上限帧率计算实际输出帧数
+func getEffectiveFrames(task *TranscodeTask) int64 {
+	if task.Config.MaxFPS > 0 && task.FrameRate > task.Config.MaxFPS && task.Duration > 0 {
+		return int64(task.Duration * task.Config.MaxFPS)
+	}
+	return task.TotalFrames
 }
 
 // GetTask 获取任务状态
@@ -1279,13 +1337,16 @@ func (t *Transcoder) GetGlobalStatus() GlobalStatus {
 		switch task.Status {
 		case StatusPending:
 			pendingCount++
-			// 使用预测时间（基于分辨率）
+			// 使用预测时间（基于分辨率，已考虑帧率上限）
 			if task.PredictedTotalTime > 0 {
 				totalRemaining += task.PredictedTotalTime
-			} else if task.TotalFrames > 0 {
-				// 如果没有预测时间，使用基准速度估算
-				predictedFPS := predictProcessingFPS(task.Width, task.Height)
-				totalRemaining += float64(task.TotalFrames) / predictedFPS
+			} else {
+				// 如果没有预测时间，使用有效帧数和基准速度估算
+				effectiveFrames := getEffectiveFrames(task)
+				if effectiveFrames > 0 {
+					predictedFPS := predictProcessingFPS(task.Width, task.Height)
+					totalRemaining += float64(effectiveFrames) / predictedFPS
+				}
 			}
 
 		case StatusProcessing:
@@ -1293,14 +1354,17 @@ func (t *Transcoder) GetGlobalStatus() GlobalStatus {
 			// 加上当前处理中任务的剩余时间
 			if task.ETASeconds > 0 {
 				totalRemaining += task.ETASeconds
-			} else if task.TotalFrames > 0 && task.ProcessedFrame > 0 {
-				// 如果有帧数信息，基于当前进度估算
-				remainingFrames := task.TotalFrames - task.ProcessedFrame
-				if task.CurrentFPS > 0 {
-					totalRemaining += float64(remainingFrames) / task.CurrentFPS
-				} else {
-					predictedFPS := predictProcessingFPS(task.Width, task.Height)
-					totalRemaining += float64(remainingFrames) / predictedFPS
+			} else {
+				// 如果有帧数信息，基于当前进度估算（使用有效帧数）
+				effectiveFrames := getEffectiveFrames(task)
+				if effectiveFrames > 0 && task.ProcessedFrame > 0 {
+					remainingFrames := effectiveFrames - task.ProcessedFrame
+					if task.CurrentFPS > 0 {
+						totalRemaining += float64(remainingFrames) / task.CurrentFPS
+					} else {
+						predictedFPS := predictProcessingFPS(task.Width, task.Height)
+						totalRemaining += float64(remainingFrames) / predictedFPS
+					}
 				}
 			}
 		}

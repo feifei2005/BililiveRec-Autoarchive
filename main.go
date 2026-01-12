@@ -16,6 +16,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/user/bililive-recorder-autoarchive/internal/app"
 	"github.com/user/bililive-recorder-autoarchive/internal/autostart"
@@ -25,7 +26,6 @@ import (
 	"github.com/user/bililive-recorder-autoarchive/internal/scanner"
 	"github.com/user/bililive-recorder-autoarchive/internal/storage"
 	"github.com/user/bililive-recorder-autoarchive/internal/transcoder"
-	"github.com/user/bililive-recorder-autoarchive/internal/tray"
 	"github.com/user/bililive-recorder-autoarchive/internal/webhook"
 )
 
@@ -49,7 +49,6 @@ type Application struct {
 	autostart  *autostart.AutoStart
 	transcoder *transcoder.Transcoder
 	app        *app.App
-	tray       tray.Tray
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -57,11 +56,8 @@ type Application struct {
 }
 
 func main() {
-	// 设置文件日志记录
-	logFile := setupFileLogging()
-	if logFile != nil {
-		defer logFile.Close()
-	}
+	// 设置文件日志记录（使用 lumberjack 实现日志轮转）
+	setupFileLogging()
 
 	log.Printf("BililiveRecorder 自动整理工具 %s (构建时间: %s)", Version, BuildTime)
 
@@ -78,9 +74,6 @@ func main() {
 		log.Fatalf("启动服务失败: %v", err)
 	}
 
-	// 启动系统托盘（非阻塞）
-	application.StartTray()
-
 	// 运行 Wails 应用（阻塞）
 	if err := application.RunWails(); err != nil {
 		log.Fatalf("运行 Wails 失败: %v", err)
@@ -93,23 +86,29 @@ func main() {
 }
 
 // setupFileLogging 设置文件日志记录
-func setupFileLogging() *os.File {
+// 使用 lumberjack 实现日志轮转，防止日志文件无限增大
+func setupFileLogging() {
 	// 获取可执行文件所在目录
 	exePath, err := os.Executable()
 	if err != nil {
 		log.Printf("警告: 无法获取可执行文件路径: %v", err)
-		return nil
+		return
 	}
 	exeDir := filepath.Dir(exePath)
 
 	// 创建日志文件路径
 	logPath := filepath.Join(exeDir, "app.log")
 
-	// 打开或创建日志文件（追加模式）
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		log.Printf("警告: 无法创建日志文件 %s: %v", logPath, err)
-		return nil
+	// 配置日志轮转
+	// lumberjack.Logger 实现了 io.WriteCloser 接口
+	// 它会自动处理日志文件的轮转、压缩和清理
+	logger := &lumberjack.Logger{
+		Filename:   logPath, // 日志文件路径
+		MaxSize:    10,      // 单个文件最大大小（MB），超过后自动轮转
+		MaxBackups: 5,       // 保留的旧日志文件数量
+		MaxAge:     30,      // 保留的天数，超过后自动删除
+		Compress:   true,    // 是否压缩旧日志文件（.gz）
+		LocalTime:  true,    // 使用本地时间命名备份文件
 	}
 
 	// 设置日志输出
@@ -117,16 +116,15 @@ func setupFileLogging() *os.File {
 	// 使用 Stat() 检测 stdout 是否有效
 	var output io.Writer
 	if isStdoutValid() {
-		output = io.MultiWriter(os.Stdout, logFile)
+		output = io.MultiWriter(os.Stdout, logger)
 	} else {
 		// GUI 模式下仅输出到文件
-		output = logFile
+		output = logger
 	}
 	log.SetOutput(output)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
-	log.Printf("日志文件: %s", logPath)
-	return logFile
+	log.Printf("日志文件: %s (轮转: 最大%dMB, 保留%d个备份, %d天)", logPath, 10, 5, 30)
 }
 
 // isStdoutValid 检测标准输出是否有效
@@ -158,6 +156,17 @@ func (a *Application) Initialize() error {
 	if err != nil {
 		log.Printf("警告: 无法加载配置文件，使用默认配置: %v", err)
 		a.config = config.Default()
+	}
+
+	// 补全缺失的配置字段（处理配置文件缺少新字段的情况）
+	a.config.FillDefaults()
+
+	// 如果加载了配置但补全了字段，保存更新后的配置
+	// 这样用户可以在配置文件中看到所有可用的选项
+	if err == nil {
+		if saveErr := a.config.Save(configPath); saveErr != nil {
+			log.Printf("警告: 保存更新后的配置文件失败: %v", saveErr)
+		}
 	}
 
 	// 打印配置信息
@@ -311,58 +320,94 @@ func (a *Application) StartServices() error {
 		}
 	}()
 
+	// 启动数据库定期清理任务
+	a.startDatabaseCleanup()
+
 	log.Println("后台服务已启动")
 	return nil
 }
 
-// StartTray 启动系统托盘
-func (a *Application) StartTray() {
-	log.Println("初始化系统托盘...")
-
-	// 检查是否启用开机自启动
-	autoRunEnabled := false
-	if a.autostart != nil {
-		enabled, err := a.autostart.IsEnabled()
-		if err == nil {
-			autoRunEnabled = enabled
-		}
+// startDatabaseCleanup 启动数据库定期清理任务
+// 每天执行一次清理，并在启动时执行初始清理
+func (a *Application) startDatabaseCleanup() {
+	// 类型断言获取 SQLiteStorage
+	sqliteStorage, ok := a.storage.(*storage.SQLiteStorage)
+	if !ok {
+		log.Println("警告: 存储不是 SQLiteStorage 类型，跳过数据库清理")
+		return
 	}
 
-	// 创建托盘实例
-	a.tray = tray.New(tray.Config{
-		Tooltip:        fmt.Sprintf("BililiveRecorder 自动整理工具 %s", Version),
-		AutoRunEnabled: autoRunEnabled,
-	})
+	// 获取默认清理配置
+	cleanupCfg := storage.DefaultCleanupConfig()
 
-	// 注册托盘事件处理
-	a.tray.OnAction(func(action tray.Action) {
-		log.Printf("[TRAY-HANDLER] 收到托盘动作: %s", action)
-
-		switch action {
-		case tray.ActionShowWindow:
-			log.Println("[TRAY-HANDLER] 处理 ShowWindow")
-			a.handleShowWindow()
-		case tray.ActionHideWindow:
-			log.Println("[TRAY-HANDLER] 处理 HideWindow")
-			a.handleHideWindow()
-		case tray.ActionScanNow:
-			log.Println("[TRAY-HANDLER] 处理 ScanNow")
-			a.triggerScan()
-		case tray.ActionToggleAutoRun:
-			log.Println("[TRAY-HANDLER] 处理 ToggleAutoRun")
-			a.handleToggleAutoRun()
-		case tray.ActionQuit:
-			log.Println("[TRAY-HANDLER] 处理 Quit")
-			a.handleQuit()
-		default:
-			log.Printf("[TRAY-HANDLER] 未知动作: %s", action)
+	// 执行初始清理（启动后延迟 1 分钟执行，避免影响启动性能）
+	go func() {
+		select {
+		case <-time.After(1 * time.Minute):
+			a.performDatabaseCleanup(sqliteStorage, cleanupCfg)
+		case <-a.ctx.Done():
+			return
 		}
-		log.Printf("[TRAY-HANDLER] 动作 %s 处理完成", action)
-	})
+	}()
 
-	// 非阻塞启动托盘
-	a.tray.Run()
-	log.Println("系统托盘已启动")
+	// 启动定期清理（每 24 小时执行一次）
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				a.performDatabaseCleanup(sqliteStorage, cleanupCfg)
+			case <-a.ctx.Done():
+				log.Println("数据库清理任务已停止")
+				return
+			}
+		}
+	}()
+
+	log.Printf("数据库清理任务已启动（每24小时执行，已完成任务保留%d天，失败任务保留%d天）",
+		cleanupCfg.CompletedMaxDays, cleanupCfg.FailedMaxDays)
+}
+
+// performDatabaseCleanup 执行数据库清理
+func (a *Application) performDatabaseCleanup(sqliteStorage *storage.SQLiteStorage, cfg storage.CleanupConfig) {
+	log.Println("开始执行数据库清理...")
+
+	// 清理前获取统计信息
+	beforeStats, _ := sqliteStorage.GetDatabaseStats()
+	log.Printf("清理前: 处理日志 %d 条（成功: %d, 失败: %d, 其他: %d），封面历史 %d 条",
+		beforeStats["total_logs"], beforeStats["success_logs"],
+		beforeStats["failed_logs"], beforeStats["other_logs"],
+		beforeStats["total_covers"])
+
+	// 执行清理
+	result := sqliteStorage.CleanupOldRecords(cfg)
+
+	// 记录清理结果
+	totalDeleted := result.DeletedCompleted + result.DeletedFailed + result.DeletedOther + result.DeletedOrphaned + result.DeletedCovers
+	if totalDeleted > 0 {
+		log.Printf("数据库清理完成: 删除已完成 %d 条, 失败 %d 条, 其他 %d 条, 孤立 %d 条, 封面历史 %d 条",
+			result.DeletedCompleted, result.DeletedFailed, result.DeletedOther,
+			result.DeletedOrphaned, result.DeletedCovers)
+
+		// 如果删除了较多记录，执行 VACUUM 释放空间
+		if totalDeleted > 100 {
+			log.Println("执行 VACUUM 操作释放磁盘空间...")
+			if err := sqliteStorage.VacuumDatabase(); err != nil {
+				log.Printf("VACUUM 失败: %v", err)
+			} else {
+				log.Println("VACUUM 完成")
+			}
+		}
+	} else {
+		log.Println("数据库清理完成: 无需删除任何记录")
+	}
+
+	// 记录错误
+	for _, err := range result.Errors {
+		log.Printf("清理错误: %v", err)
+	}
 }
 
 // RunWails 运行 Wails 应用程序
@@ -409,15 +454,10 @@ func (a *Application) onWailsStartup(ctx context.Context) {
 // handleShowWindow 显示窗口
 func (a *Application) handleShowWindow() {
 	log.Println("[WINDOW] handleShowWindow 开始")
-	log.Printf("[WINDOW] wailsCtx=%v, tray=%v", a.wailsCtx != nil, a.tray != nil)
 	if a.wailsCtx != nil {
 		log.Println("[WINDOW] 调用 WindowShow")
 		wailsRuntime.WindowShow(a.wailsCtx)
 		log.Println("[WINDOW] WindowShow 返回")
-		if a.tray != nil {
-			log.Println("[WINDOW] 更新托盘状态为可见")
-			a.tray.SetWindowVisible(true)
-		}
 	} else {
 		log.Println("[WINDOW] 警告: wailsCtx 为 nil，无法显示窗口")
 	}
@@ -427,15 +467,10 @@ func (a *Application) handleShowWindow() {
 // handleHideWindow 隐藏窗口
 func (a *Application) handleHideWindow() {
 	log.Println("[WINDOW] handleHideWindow 开始")
-	log.Printf("[WINDOW] wailsCtx=%v, tray=%v", a.wailsCtx != nil, a.tray != nil)
 	if a.wailsCtx != nil {
 		log.Println("[WINDOW] 调用 WindowHide")
 		wailsRuntime.WindowHide(a.wailsCtx)
 		log.Println("[WINDOW] WindowHide 返回")
-		if a.tray != nil {
-			log.Println("[WINDOW] 更新托盘状态为隐藏")
-			a.tray.SetWindowVisible(false)
-		}
 	} else {
 		log.Println("[WINDOW] 警告: wailsCtx 为 nil，无法隐藏窗口")
 	}
@@ -462,18 +497,12 @@ func (a *Application) handleToggleAutoRun() {
 			return
 		}
 		log.Println("已禁用开机自启动")
-		if a.tray != nil {
-			a.tray.SetAutoRunChecked(false)
-		}
 	} else {
 		if err := a.autostart.Enable(); err != nil {
 			log.Printf("启用开机自启动失败: %v", err)
 			return
 		}
 		log.Println("已启用开机自启动")
-		if a.tray != nil {
-			a.tray.SetAutoRunChecked(true)
-		}
 	}
 }
 
@@ -539,15 +568,6 @@ func (a *Application) Shutdown() {
 	// 创建关闭超时上下文
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-
-	// 停止系统托盘
-	if a.tray != nil {
-		log.Println("[SHUTDOWN] 停止系统托盘...")
-		if err := a.tray.Stop(); err != nil {
-			log.Printf("[SHUTDOWN] 托盘停止错误: %v", err)
-		}
-		log.Println("[SHUTDOWN] 系统托盘已停止")
-	}
 
 	// 取消主上下文
 	if a.cancel != nil {

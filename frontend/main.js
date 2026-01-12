@@ -425,38 +425,68 @@ const ffmpegPresets = {
 // 默认 FFmpeg 参数
 const DEFAULT_FFMPEG_PARAMS = '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k';
 
-// 保存 FFmpeg 参数到 localStorage
-function saveFFmpegParams(params) {
-    localStorage.setItem('ffmpegParams', params);
+// 转码设置缓存
+let cachedTranscodeSettings = null;
+
+// 从后端加载转码设置
+async function loadTranscodeSettings() {
+    try {
+        const settings = await window.go.app.App.GetTranscodeSettings();
+        cachedTranscodeSettings = settings;
+        return settings;
+    } catch (error) {
+        console.error('加载转码设置失败:', error);
+        return {
+            params: DEFAULT_FFMPEG_PARAMS,
+            format: 'mp4',
+            preserveCover: true,
+            deleteSourceOnSuccess: false,
+            maxFps: 0
+        };
+    }
 }
 
-// 从 localStorage 加载 FFmpeg 参数
-function loadFFmpegParams() {
-    return localStorage.getItem('ffmpegParams') || DEFAULT_FFMPEG_PARAMS;
-}
-
-// 保存帧率上限到 localStorage
-function saveMaxFps(value) {
-    localStorage.setItem('maxFps', value);
-}
-
-// 从 localStorage 加载帧率上限
-function loadMaxFps() {
-    return localStorage.getItem('maxFps') || '不限制';
+// 格式化帧率值显示
+function formatMaxFps(value) {
+    if (value <= 0) {
+        return '不限制';
+    }
+    return String(value);
 }
 
 // 加载转码页面
 async function loadTranscodePage() {
-    // 恢复保存的 FFmpeg 参数
+    // 从后端加载保存的转码设置
+    const settings = await loadTranscodeSettings();
+    
+    // 恢复 FFmpeg 参数
     const paramsInput = document.getElementById('ffmpeg-params');
     if (paramsInput && !paramsInput.value) {
-        paramsInput.value = loadFFmpegParams();
+        paramsInput.value = settings.params || DEFAULT_FFMPEG_PARAMS;
     }
     
-    // 恢复保存的帧率上限
+    // 恢复帧率上限
     const maxFpsInput = document.getElementById('max-fps');
     if (maxFpsInput && !maxFpsInput.value) {
-        maxFpsInput.value = loadMaxFps();
+        maxFpsInput.value = formatMaxFps(settings.maxFps);
+    }
+    
+    // 恢复输出格式
+    const formatSelect = document.getElementById('output-format');
+    if (formatSelect && settings.format) {
+        formatSelect.value = settings.format;
+    }
+    
+    // 恢复保留封面选项
+    const preserveCoverCheckbox = document.getElementById('preserve-cover');
+    if (preserveCoverCheckbox) {
+        preserveCoverCheckbox.checked = settings.preserveCover !== false; // 默认为 true
+    }
+    
+    // 恢复删除源文件选项
+    const deleteSourceCheckbox = document.getElementById('delete-source-on-success');
+    if (deleteSourceCheckbox) {
+        deleteSourceCheckbox.checked = settings.deleteSourceOnSuccess === true; // 默认为 false
     }
     
     // 加载转码任务列表
@@ -560,9 +590,7 @@ async function startTranscode() {
         }
     }
     
-    // 保存 FFmpeg 参数到 localStorage
-    saveFFmpegParams(params);
-    saveMaxFps(maxFpsInput);
+    // 注意：设置会在后端 StartTranscode 中自动保存
     
     try {
         showToast('正在添加转码任务...', 'info');
@@ -913,6 +941,48 @@ async function clearCompletedTasks() {
     }
 }
 
+// 保存转码设置
+async function saveTranscodeSettings() {
+    const params = document.getElementById('ffmpeg-params').value.trim();
+    const format = document.getElementById('output-format').value;
+    const preserveCover = document.getElementById('preserve-cover').checked;
+    const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
+    
+    // 解析帧率上限
+    const maxFpsInput = document.getElementById('max-fps').value.trim();
+    let maxFps = 0; // 0 表示不限制
+    if (maxFpsInput && maxFpsInput !== '不限制') {
+        const parsed = parseFloat(maxFpsInput);
+        if (!isNaN(parsed) && parsed > 0) {
+            maxFps = parsed;
+        }
+    }
+    
+    try {
+        await window.go.app.App.SaveTranscodeSettings({
+            params: params,
+            format: format,
+            preserveCover: preserveCover,
+            deleteSourceOnSuccess: deleteSourceOnSuccess,
+            maxFps: maxFps
+        });
+        
+        // 更新缓存
+        cachedTranscodeSettings = {
+            params: params,
+            format: format,
+            preserveCover: preserveCover,
+            deleteSourceOnSuccess: deleteSourceOnSuccess,
+            maxFps: maxFps
+        };
+        
+        showToast('转码设置已保存', 'success');
+    } catch (error) {
+        console.error('保存转码设置失败:', error);
+        showToast(`保存失败: ${error}`, 'error');
+    }
+}
+
 // 转码页面事件绑定
 function initTranscodeEvents() {
     // 页签切换
@@ -926,6 +996,7 @@ function initTranscodeEvents() {
     document.getElementById('btn-scan-folder')?.addEventListener('click', scanTranscodeFolder);
     
     // 转码控制
+    document.getElementById('btn-save-transcode-settings')?.addEventListener('click', saveTranscodeSettings);
     document.getElementById('btn-start-transcode')?.addEventListener('click', startTranscode);
     document.getElementById('btn-cancel-transcode')?.addEventListener('click', cancelTranscode);
     

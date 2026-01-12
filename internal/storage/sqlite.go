@@ -554,3 +554,244 @@ func (s *SQLiteStorage) Close() error {
 	}
 	return nil
 }
+
+// ================== 数据库清理功能 ==================
+
+// CleanupConfig 清理配置
+type CleanupConfig struct {
+	// CompletedMaxDays 已完成任务保留天数（默认 7 天）
+	CompletedMaxDays int
+	// FailedMaxDays 失败任务保留天数（默认 30 天）
+	FailedMaxDays int
+	// OtherMaxDays 其他状态任务保留天数（默认 30 天）
+	OtherMaxDays int
+	// CleanupOrphaned 是否清理源文件已删除的记录
+	CleanupOrphaned bool
+	// CoverHistoryMaxDays 封面历史保留天数（默认 90 天）
+	CoverHistoryMaxDays int
+}
+
+// DefaultCleanupConfig 返回默认清理配置
+func DefaultCleanupConfig() CleanupConfig {
+	return CleanupConfig{
+		CompletedMaxDays:    7,
+		FailedMaxDays:       30,
+		OtherMaxDays:        30,
+		CleanupOrphaned:     true,
+		CoverHistoryMaxDays: 90,
+	}
+}
+
+// CleanupResult 清理结果
+type CleanupResult struct {
+	DeletedCompleted int // 删除的已完成记录数
+	DeletedFailed    int // 删除的失败记录数
+	DeletedOther     int // 删除的其他状态记录数
+	DeletedOrphaned  int // 删除的孤立记录数
+	DeletedCovers    int // 删除的封面历史记录数
+	Errors           []error
+}
+
+// CleanupOldRecords 清理旧的任务记录
+// 根据配置清理超过指定天数的记录
+func (s *SQLiteStorage) CleanupOldRecords(cfg CleanupConfig) CleanupResult {
+	result := CleanupResult{}
+
+	// 1. 清理已完成的任务记录
+	if cfg.CompletedMaxDays > 0 {
+		threshold := time.Now().AddDate(0, 0, -cfg.CompletedMaxDays)
+		query := `DELETE FROM process_logs WHERE status = 'success' AND created_at < ?`
+		res, err := s.db.Exec(query, threshold)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("清理已完成记录失败: %w", err))
+		} else if affected, err := res.RowsAffected(); err == nil {
+			result.DeletedCompleted = int(affected)
+		}
+	}
+
+	// 2. 清理失败的任务记录
+	if cfg.FailedMaxDays > 0 {
+		threshold := time.Now().AddDate(0, 0, -cfg.FailedMaxDays)
+		query := `DELETE FROM process_logs WHERE status = 'failed' AND created_at < ?`
+		res, err := s.db.Exec(query, threshold)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("清理失败记录失败: %w", err))
+		} else if affected, err := res.RowsAffected(); err == nil {
+			result.DeletedFailed = int(affected)
+		}
+	}
+
+	// 3. 清理其他状态的任务记录（如 discarded 等）
+	if cfg.OtherMaxDays > 0 {
+		threshold := time.Now().AddDate(0, 0, -cfg.OtherMaxDays)
+		query := `DELETE FROM process_logs WHERE status NOT IN ('success', 'failed', 'pending', 'processing') AND created_at < ?`
+		res, err := s.db.Exec(query, threshold)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("清理其他记录失败: %w", err))
+		} else if affected, err := res.RowsAffected(); err == nil {
+			result.DeletedOther = int(affected)
+		}
+	}
+
+	// 4. 清理封面历史记录
+	if cfg.CoverHistoryMaxDays > 0 {
+		threshold := time.Now().AddDate(0, 0, -cfg.CoverHistoryMaxDays)
+		query := `DELETE FROM cover_history WHERE created_at < ?`
+		res, err := s.db.Exec(query, threshold)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("清理封面历史失败: %w", err))
+		} else if affected, err := res.RowsAffected(); err == nil {
+			result.DeletedCovers = int(affected)
+		}
+	}
+
+	// 5. 清理���文件已删除的孤立记录
+	if cfg.CleanupOrphaned {
+		orphaned := s.cleanupOrphanedRecords()
+		result.DeletedOrphaned = orphaned
+	}
+
+	return result
+}
+
+// cleanupOrphanedRecords 清理源文件已删除的孤立记录
+// 检查 input_path 对应的文件是否存在，如果不存在则删除记录
+// 注意：此操作只针对已完成或失败的任务，不会删除正在处理的任务记录
+func (s *SQLiteStorage) cleanupOrphanedRecords() int {
+	// 只查询已完成或失败的任务
+	query := `SELECT id, input_path FROM process_logs WHERE status IN ('success', 'failed', 'discarded')`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+
+	var idsToDelete []int64
+	for rows.Next() {
+		var id int64
+		var inputPath string
+		if err := rows.Scan(&id, &inputPath); err != nil {
+			continue
+		}
+
+		// 检查源文件是否存在
+		if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+			idsToDelete = append(idsToDelete, id)
+		}
+	}
+
+	// 批量删除孤立记录
+	if len(idsToDelete) > 0 {
+		// 分批删除，每批最多 100 条
+		batchSize := 100
+		for i := 0; i < len(idsToDelete); i += batchSize {
+			end := i + batchSize
+			if end > len(idsToDelete) {
+				end = len(idsToDelete)
+			}
+			batch := idsToDelete[i:end]
+
+			// 构建 IN 子句
+			placeholders := ""
+			args := make([]interface{}, len(batch))
+			for j, id := range batch {
+				if j > 0 {
+					placeholders += ","
+				}
+				placeholders += "?"
+				args[j] = id
+			}
+
+			deleteQuery := fmt.Sprintf("DELETE FROM process_logs WHERE id IN (%s)", placeholders)
+			s.db.Exec(deleteQuery, args...)
+		}
+	}
+
+	return len(idsToDelete)
+}
+
+// CleanupOrphanedCovers 清理无效的封面历史记录
+// 检查 cover_path 对应的文件是否存在，如果不存在则删除记录
+func (s *SQLiteStorage) CleanupOrphanedCovers() int {
+	query := `SELECT id, cover_path FROM cover_history`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+
+	var idsToDelete []int64
+	for rows.Next() {
+		var id int64
+		var coverPath string
+		if err := rows.Scan(&id, &coverPath); err != nil {
+			continue
+		}
+
+		// 检查封面文件是否存在
+		if _, err := os.Stat(coverPath); os.IsNotExist(err) {
+			idsToDelete = append(idsToDelete, id)
+		}
+	}
+
+	// 批量删除
+	if len(idsToDelete) > 0 {
+		batchSize := 100
+		for i := 0; i < len(idsToDelete); i += batchSize {
+			end := i + batchSize
+			if end > len(idsToDelete) {
+				end = len(idsToDelete)
+			}
+			batch := idsToDelete[i:end]
+
+			placeholders := ""
+			args := make([]interface{}, len(batch))
+			for j, id := range batch {
+				if j > 0 {
+					placeholders += ","
+				}
+				placeholders += "?"
+				args[j] = id
+			}
+
+			deleteQuery := fmt.Sprintf("DELETE FROM cover_history WHERE id IN (%s)", placeholders)
+			s.db.Exec(deleteQuery, args...)
+		}
+	}
+
+	return len(idsToDelete)
+}
+
+// GetDatabaseStats 获取数据库统计信息
+func (s *SQLiteStorage) GetDatabaseStats() (map[string]int, error) {
+	stats := make(map[string]int)
+
+	// 处理日志统计
+	var totalLogs, successLogs, failedLogs, otherLogs int
+	s.db.QueryRow(`SELECT COUNT(*) FROM process_logs`).Scan(&totalLogs)
+	s.db.QueryRow(`SELECT COUNT(*) FROM process_logs WHERE status = 'success'`).Scan(&successLogs)
+	s.db.QueryRow(`SELECT COUNT(*) FROM process_logs WHERE status = 'failed'`).Scan(&failedLogs)
+	s.db.QueryRow(`SELECT COUNT(*) FROM process_logs WHERE status NOT IN ('success', 'failed')`).Scan(&otherLogs)
+
+	stats["total_logs"] = totalLogs
+	stats["success_logs"] = successLogs
+	stats["failed_logs"] = failedLogs
+	stats["other_logs"] = otherLogs
+
+	// 封面历史统计
+	var totalCovers int
+	s.db.QueryRow(`SELECT COUNT(*) FROM cover_history`).Scan(&totalCovers)
+	stats["total_covers"] = totalCovers
+
+	return stats, nil
+}
+
+// VacuumDatabase 执行数据库 VACUUM 操作
+// 用于在大量删除后释放磁盘空间
+func (s *SQLiteStorage) VacuumDatabase() error {
+	_, err := s.db.Exec("VACUUM")
+	if err != nil {
+		return fmt.Errorf("VACUUM 失败: %w", err)
+	}
+	return nil
+}

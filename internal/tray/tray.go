@@ -4,6 +4,7 @@ package tray
 import (
 	"log"
 	"sync"
+	"time"
 
 	"github.com/getlantern/systray"
 )
@@ -70,6 +71,12 @@ type DefaultTray struct {
 	mAutoRun  *systray.MenuItem
 	mScan     *systray.MenuItem
 	mQuit     *systray.MenuItem
+
+	// 用于优雅关闭的 channel
+	stopCh chan struct{}
+
+	// 心跳计数器，用于监控托盘运行状态
+	heartbeatCount uint64
 }
 
 // New 创建新的托盘实例
@@ -80,6 +87,7 @@ func New(cfg Config) *DefaultTray {
 	return &DefaultTray{
 		config:        cfg,
 		windowVisible: true, // 默认窗口可见
+		stopCh:        make(chan struct{}),
 	}
 }
 
@@ -91,6 +99,8 @@ func (t *DefaultTray) Start() error {
 		return nil
 	}
 	t.running = true
+	// 重新创建 stopCh（以防之前被关闭）
+	t.stopCh = make(chan struct{})
 	t.mu.Unlock()
 
 	// systray.Run 是阻塞的，会在退出时返回
@@ -112,9 +122,17 @@ func (t *DefaultTray) Stop() error {
 		return nil
 	}
 
+	// 关闭 stopCh 通知所有 goroutine 退出
+	select {
+	case <-t.stopCh:
+		// 已经关闭
+	default:
+		close(t.stopCh)
+	}
+
 	systray.Quit()
 	t.running = false
-	log.Println("系统托盘已停止")
+	log.Println("[TRAY] 系统托盘已停止")
 	return nil
 }
 
@@ -202,6 +220,9 @@ func (t *DefaultTray) onReady() {
 
 	// 处理菜单点击事件
 	go t.handleClicks()
+
+	// 启动心跳检测和定时刷新，避免长期运行无响应
+	go t.heartbeat()
 }
 
 // handleClicks 处理菜单点击事件
@@ -209,6 +230,10 @@ func (t *DefaultTray) handleClicks() {
 	log.Println("[TRAY] handleClicks 协程已启动")
 	for {
 		select {
+		case <-t.stopCh:
+			log.Println("[TRAY] handleClicks 收到停止信号，协程退出")
+			return
+
 		case <-t.mShowHide.ClickedCh:
 			log.Println("[TRAY] 收到 显示/隐藏 点击事件")
 			t.mu.RLock()
@@ -271,9 +296,72 @@ func (t *DefaultTray) handleClicks() {
 	}
 }
 
+// heartbeat 心跳检测和定时刷新
+// 定期刷新托盘状态，避免 Windows 消息队列阻塞导致托盘无响应
+func (t *DefaultTray) heartbeat() {
+	log.Println("[TRAY] heartbeat 协程已启动")
+
+	// 心跳间隔：5分钟
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-t.stopCh:
+			log.Println("[TRAY] heartbeat 收到停止信号，协程退出")
+			return
+
+		case <-ticker.C:
+			t.mu.Lock()
+			t.heartbeatCount++
+			count := t.heartbeatCount
+			running := t.running
+			t.mu.Unlock()
+
+			if !running {
+				log.Println("[TRAY] heartbeat: 托盘已停止，协程退出")
+				return
+			}
+
+			// 记录心跳日志
+			log.Printf("[TRAY] heartbeat #%d: 托盘运行正常", count)
+
+			// 刷新托盘提示文本，触发 Windows 消息循环
+			// 这有助于保持托盘图标的响应性
+			t.refreshTray()
+		}
+	}
+}
+
+// refreshTray 刷新托盘状态
+// 通过重新设置 tooltip 来触发 Windows 消息循环更新
+func (t *DefaultTray) refreshTray() {
+	t.mu.RLock()
+	tooltip := t.config.Tooltip
+	t.mu.RUnlock()
+
+	// 重新设置 tooltip 以触发刷新
+	systray.SetTooltip(tooltip)
+}
+
 // onExit 托盘退出回调
 func (t *DefaultTray) onExit() {
-	log.Println("托盘已退出")
+	log.Println("[TRAY] 托盘已退出")
+
+	// 确保 stopCh 被关闭，通知所有 goroutine 退出
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.running {
+		// 尝试关闭 stopCh（如果还没被关闭）
+		select {
+		case <-t.stopCh:
+			// 已经关闭
+		default:
+			close(t.stopCh)
+		}
+		t.running = false
+	}
 }
 
 // defaultIcon 返回默认图标数据
