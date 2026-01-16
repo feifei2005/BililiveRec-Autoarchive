@@ -2,6 +2,7 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/user/bililive-recorder-autoarchive/internal/ffmpeg"
@@ -487,14 +489,16 @@ func (p *DefaultProcessor) buildFileGroup(flvPath string) *scanner.FileGroup {
 
 	nameWithoutExt := strings.TrimSuffix(baseName, ext)
 
-	// 解析主播名称（从父目录名称中提取）
+	// 解析主播名称和UID（从父目录名称中提取）
 	streamerDir := filepath.Base(dir)
 	streamerName := parseStreamerNameFromDir(streamerDir)
+	streamerUID := parseStreamerUIDFromDir(streamerDir)
 
 	group := &scanner.FileGroup{
 		FLVPath:      flvPath,
 		StreamerDir:  streamerDir,
 		StreamerName: streamerName,
+		StreamerUID:  streamerUID,
 	}
 
 	// 查找对应的 XML 文件
@@ -528,6 +532,17 @@ func parseStreamerNameFromDir(dirName string) string {
 		return dirName
 	}
 	return dirName[idx+1:]
+}
+
+// parseStreamerUIDFromDir 从目录名解析主播UID
+// 例如：从 "1776261556-筱田柴" 解析出 "1776261556"
+// 如果目录名不包含 "-"，返回空字符串
+func parseStreamerUIDFromDir(dirName string) string {
+	idx := strings.Index(dirName, "-")
+	if idx == -1 || idx == 0 {
+		return ""
+	}
+	return dirName[:idx]
 }
 
 // runFullScan 运行全量扫描
@@ -791,8 +806,20 @@ func (p *DefaultProcessor) deleteGroup(group scanner.FileGroup) error {
 	return nil
 }
 
+// PathTemplateData 路径模板数据结构
+type PathTemplateData struct {
+	OutputDir   string // 输出根目录
+	Streamer    string // 主播名称（如 "筱田柴"）
+	StreamerUID string // 主播UID（如 "1776261556"）
+	StreamerDir string // 完整主播目录名（如 "1776261556-筱田柴"）
+	Year        string // 年份 YYYY
+	Month       string // 月份 MM
+	Day         string // 日期 DD
+}
+
 // buildOutputPath 构建输出路径
-// 格式：[根输出目录] \ [主播名] \ [YYYY] \ [MM] \ [DD] \ 文件名.mkv
+// 使用配置的 PathTemplate 模板解析输出目录
+// 支持的模板变量: {{.OutputDir}}, {{.Streamer}}, {{.StreamerUID}}, {{.StreamerDir}}, {{.Year}}, {{.Month}}, {{.Day}}
 func (p *DefaultProcessor) buildOutputPath(group scanner.FileGroup) (string, error) {
 	// 从文件名解析日期
 	baseName := filepath.Base(group.FLVPath)
@@ -809,8 +836,36 @@ func (p *DefaultProcessor) buildOutputPath(group scanner.FileGroup) (string, err
 	month := dateStr[4:6]
 	day := dateStr[6:8]
 
-	// 构建输出目录
-	outputDir := filepath.Join(p.config.OutputRoot, group.StreamerName, year, month, day)
+	// 准备模板数据
+	data := PathTemplateData{
+		OutputDir:   p.config.OutputRoot,
+		Streamer:    group.StreamerName,
+		StreamerUID: group.StreamerUID,
+		StreamerDir: group.StreamerDir,
+		Year:        year,
+		Month:       month,
+		Day:         day,
+	}
+
+	// 获取路径模板，如果未配置则使用默认模板
+	pathTemplate := p.config.PathTemplate
+	if pathTemplate == "" {
+		pathTemplate = `{{.OutputDir}}\{{.Streamer}}\{{.Year}}\{{.Month}}\{{.Day}}`
+	}
+
+	// 解析模板
+	tmpl, err := template.New("path").Parse(pathTemplate)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse path template: %w", err)
+	}
+
+	// 执行模板
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute path template: %w", err)
+	}
+
+	outputDir := buf.String()
 
 	// 构建输出文件名（替换扩展名为 .mkv）
 	outputFileName := strings.TrimSuffix(baseName, filepath.Ext(baseName)) + ".mkv"
@@ -1101,6 +1156,47 @@ func (p *DefaultProcessor) StopNow() error {
 	}
 
 	return nil
+}
+
+// UpdateConfig 动态更新处理器配置
+// 注意：某些配置（如 MaxConcurrent）需要重启才能完全生效
+// 此方法会更新可以热更新的配置项
+func (p *DefaultProcessor) UpdateConfig(cfg Config) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// 更新可以热更新的配置项
+	p.config.InputDir = cfg.InputDir
+	p.config.OutputRoot = cfg.OutputRoot
+	p.config.DiscardDir = cfg.DiscardDir
+	p.config.PathTemplate = cfg.PathTemplate
+	p.config.CheckVideoStream = cfg.CheckVideoStream
+	p.config.MinFileSizeKB = cfg.MinFileSizeKB
+	p.config.DiscardFailedFiles = cfg.DiscardFailedFiles
+	p.config.ConflictMode = cfg.ConflictMode
+	p.config.DefaultCoverPath = cfg.DefaultCoverPath
+	p.config.DeleteOriginal = cfg.DeleteOriginal
+
+	// 更新扫描间隔（会在下一次定时扫描时生效）
+	if cfg.ScanInterval > 0 {
+		p.config.ScanInterval = cfg.ScanInterval
+	}
+
+	// 注意：MaxConcurrent 的变更需要重启才能生效，因为 worker 数量在启动时固定
+	// 这里仅记录日志提醒用户
+	if cfg.MaxConcurrent != p.config.MaxConcurrent {
+		log.Printf("配置热更新：MaxConcurrent 从 %d 变更为 %d，需要重启程序才能生效",
+			p.config.MaxConcurrent, cfg.MaxConcurrent)
+	}
+
+	log.Println("处理器配置已热更新")
+}
+
+// GetConfig 获取当前处理器配置（只读副本）
+func (p *DefaultProcessor) GetConfig() Config {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.config
 }
 
 // 错误定义

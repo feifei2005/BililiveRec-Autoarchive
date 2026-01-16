@@ -105,13 +105,18 @@ type ConfigData struct {
 	MinFileSizeKB      int64    `json:"minFileSizeKB"`
 	CheckVideoStream   bool     `json:"checkVideoStream"`
 	DiscardFailedFiles bool     `json:"discardFailedFiles"` // 处理失败时是否进入丢弃流程
+	DeleteOriginal     bool     `json:"deleteOriginal"`     // 处理成功后删除原文件
+	ConflictMode       string   `json:"conflictMode"`       // 文件冲突处理模式
+	ScanIntervalMin    int      `json:"scanIntervalMin"`    // 定时扫描间隔（分钟）
 	ServerPort         int      `json:"serverPort"`
 	WebhookPath        string   `json:"webhookPath"`
 	FFmpegPath         string   `json:"ffmpegPath"`
 	FFprobePath        string   `json:"ffprobePath"`
 	CustomArgs         []string `json:"customArgs"`
 	DefaultCover       string   `json:"defaultCover"`
+	SaveHistory        bool     `json:"saveHistory"` // 是否保存封面历史
 	PathTemplate       string   `json:"pathTemplate"`
+	StreamerNameRegex  string   `json:"streamerNameRegex"` // 主播名解析正则
 }
 
 // GetConfig 获取当前配置
@@ -128,23 +133,28 @@ func (a *App) GetConfig() ConfigData {
 		MinFileSizeKB:      a.config.Processing.MinFileSizeKB,
 		CheckVideoStream:   a.config.Processing.CheckVideoStream,
 		DiscardFailedFiles: a.config.Processing.DiscardFailedFiles,
+		DeleteOriginal:     a.config.Processing.DeleteOriginal,
+		ConflictMode:       a.config.Processing.ConflictMode,
+		ScanIntervalMin:    a.config.Processing.ScanIntervalMin,
 		ServerPort:         a.config.Server.Port,
 		WebhookPath:        a.config.Server.WebhookPath,
 		FFmpegPath:         a.config.FFmpeg.Path,
 		FFprobePath:        a.config.FFmpeg.FFprobePath,
 		CustomArgs:         a.config.FFmpeg.CustomArgs,
 		DefaultCover:       a.config.Covers.DefaultCover,
+		SaveHistory:        a.config.Covers.SaveHistory,
 		PathTemplate:       a.config.Rules.PathTemplate,
+		StreamerNameRegex:  a.config.Rules.StreamerNameRegex,
 	}
 }
 
-// SaveConfig 保存配置
+// SaveConfig 保存配置并更新运行时配置
 func (a *App) SaveConfig(data ConfigData) error {
 	if a.config == nil {
 		return fmt.Errorf("配置未初始化")
 	}
 
-	// 更新配置
+	// 更新内存中的配置对象
 	a.config.Processing.InputDir = data.InputDir
 	a.config.Processing.OutputRoot = data.OutputRoot
 	a.config.Processing.DiscardDir = data.DiscardDir
@@ -152,21 +162,46 @@ func (a *App) SaveConfig(data ConfigData) error {
 	a.config.Processing.MinFileSizeKB = data.MinFileSizeKB
 	a.config.Processing.CheckVideoStream = data.CheckVideoStream
 	a.config.Processing.DiscardFailedFiles = data.DiscardFailedFiles
+	a.config.Processing.DeleteOriginal = data.DeleteOriginal
+	a.config.Processing.ConflictMode = data.ConflictMode
+	a.config.Processing.ScanIntervalMin = data.ScanIntervalMin
 	a.config.Server.Port = data.ServerPort
 	a.config.Server.WebhookPath = data.WebhookPath
 	a.config.FFmpeg.Path = data.FFmpegPath
 	a.config.FFmpeg.FFprobePath = data.FFprobePath
 	a.config.FFmpeg.CustomArgs = data.CustomArgs
 	a.config.Covers.DefaultCover = data.DefaultCover
+	a.config.Covers.SaveHistory = data.SaveHistory
 	a.config.Rules.PathTemplate = data.PathTemplate
+	a.config.Rules.StreamerNameRegex = data.StreamerNameRegex
 
-	// 保存到文件
+	// 保存到配置文件
 	configPath := filepath.Join(".", "config.yaml")
 	if err := a.config.Save(configPath); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	log.Println("配置已保存")
+	// 通知 processor 更新运行时配置（热更新）
+	if a.processor != nil {
+		processorConfig := processor.Config{
+			MaxConcurrent:      data.MaxConcurrent,
+			InputDir:           data.InputDir,
+			OutputRoot:         data.OutputRoot,
+			DiscardDir:         data.DiscardDir,
+			PathTemplate:       data.PathTemplate,
+			CheckVideoStream:   data.CheckVideoStream,
+			MinFileSizeKB:      data.MinFileSizeKB,
+			DiscardFailedFiles: data.DiscardFailedFiles,
+			ConflictMode:       processor.ConflictMode(data.ConflictMode),
+			DefaultCoverPath:   data.DefaultCover,
+			DeleteOriginal:     data.DeleteOriginal,
+			ScanInterval:       time.Duration(data.ScanIntervalMin) * time.Minute,
+		}
+		a.processor.UpdateConfig(processorConfig)
+		log.Println("处理器配置已热更新")
+	}
+
+	log.Println("配置已保存并应用")
 	return nil
 }
 

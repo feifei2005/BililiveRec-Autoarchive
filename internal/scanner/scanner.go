@@ -26,7 +26,8 @@ type FileGroup struct {
 	XMLPath      string // XML 弹幕文件路径（可选，为空表示不存在）
 	CoverPath    string // 封面图片路径（可选，为空表示不存在）
 	StreamerDir  string // 主播文件夹名称（如 "1776261556-筱田柴"）
-	StreamerName string // 主播名称（从文件夹名解析）
+	StreamerName string // 主播名称（从文件夹名解析，如 "筱田柴"）
+	StreamerUID  string // 主播UID（从文件夹名解析，如 "1776261556"）
 }
 
 // Scanner 文件扫描器接口
@@ -142,9 +143,11 @@ func (s *DefaultScanner) Scan() ([]FileGroup, error) {
 
 		// 解析主播名称（从文件夹名中提取 - 后的部分）
 		streamerName := parseStreamerName(streamerDir)
+		// 解析主播UID（从文件夹名中提取 - 前的部分）
+		streamerUID := parseStreamerUID(streamerDir)
 
 		// 扫描主播文件夹中的 .flv 文件
-		flvGroups, err := s.scanStreamerFolder(streamerPath, streamerDir, streamerName)
+		flvGroups, err := s.scanStreamerFolder(streamerPath, streamerDir, streamerName, streamerUID)
 		if err != nil {
 			// 单个文件夹扫描失败不影响其他文件夹
 			log.Printf("[SCANNER] 扫描文件夹失败: %s, 错误: %v", streamerPath, err)
@@ -160,7 +163,7 @@ func (s *DefaultScanner) Scan() ([]FileGroup, error) {
 }
 
 // scanStreamerFolder 扫描单个主播文件夹，返回该文件夹中的文件组
-func (s *DefaultScanner) scanStreamerFolder(folderPath, streamerDir, streamerName string) ([]FileGroup, error) {
+func (s *DefaultScanner) scanStreamerFolder(folderPath, streamerDir, streamerName, streamerUID string) ([]FileGroup, error) {
 	var groups []FileGroup
 
 	// 读取文件夹内容
@@ -219,6 +222,7 @@ func (s *DefaultScanner) scanStreamerFolder(folderPath, streamerDir, streamerNam
 			FLVPath:      flvPath,
 			StreamerDir:  streamerDir,
 			StreamerName: streamerName,
+			StreamerUID:  streamerUID,
 		}
 
 		// 查找匹配的 .xml 文件
@@ -253,6 +257,19 @@ func parseStreamerName(folderName string) string {
 		return folderName
 	}
 	return folderName[idx+1:]
+}
+
+// parseStreamerUID 从主播文件夹名称中解析主播UID
+// 例如：从 "1776261556-筱田柴" 解析出 "1776261556"
+// 如果文件夹名不包含 "-"，返回空字符串
+func parseStreamerUID(folderName string) string {
+	// 查找第一个 "-" 的位置
+	idx := strings.Index(folderName, "-")
+	if idx == -1 || idx == 0 {
+		// 没有找到 "-" 或 "-" 在开头，返回空字符串
+		return ""
+	}
+	return folderName[:idx]
 }
 
 // findCoverFile 在文件夹中查找封面文件
