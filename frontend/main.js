@@ -783,7 +783,7 @@ function renderTranscodeTaskItem(t) {
         errorHtml = `<div class="task-error-msg">${escapeHtml(t.error)}</div>`;
     }
     
-    // 视频信息（分辨率、帧数）
+    // 视频信息（分辨率、帧数、预计时间）
     let videoInfoHtml = '';
     if (t.width && t.height) {
         const resolution = `${t.width}x${t.height}`;
@@ -792,6 +792,7 @@ function renderTranscodeTaskItem(t) {
             <div class="task-video-info">
                 <span class="video-resolution">📐 ${resolution}</span>
                 ${framesInfo ? `<span class="video-frames">🎞️ ${framesInfo}</span>` : ''}
+                ${t.predictedTimeString ? `<span class="video-predicted">⏱️ 预计 ${t.predictedTimeString}</span>` : ''}
             </div>
         `;
     }
