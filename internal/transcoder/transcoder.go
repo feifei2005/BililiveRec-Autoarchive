@@ -42,6 +42,10 @@ type Transcoder struct {
 	// 当前正在运行的 FFmpeg 进程，用于取消
 	currentCmd   *exec.Cmd
 	currentCmdMu sync.Mutex
+
+	// 动态速度追踪（用于更准确的全局剩余时间估算）
+	avgNormalizedFPS float64   // 归一化到1080p的平均处理速度
+	avgFPSLastUpdate time.Time // 上次更新时间
 }
 
 // Config 转码器配置
@@ -931,6 +935,9 @@ func (t *Transcoder) executeFFmpeg(task *TranscodeTask, args []string) error {
 						task.CurrentFPS = fps
 						t.updateETA(task)
 						t.mu.Unlock()
+
+						// 更新全局平均处理速度（用于更准确的剩余时间估算）
+						t.updateAvgFPS(fps, task.Width, task.Height)
 					}
 
 					// 解析时间 (格式: HH:MM:SS.ms)
@@ -1216,6 +1223,59 @@ func predictProcessingFPS(width, height int) float64 {
 	return baseFPS * pixelRatio
 }
 
+// normalizeToBaseFPS 将实际处理速度归一化到1080p基准
+// 这样可以将不同分辨率的处理速度统一到同一尺度进行平均
+func normalizeToBaseFPS(actualFPS float64, width, height int) float64 {
+	const basePixels = 1920.0 * 1080.0
+	if width <= 0 || height <= 0 {
+		return actualFPS
+	}
+	actualPixels := float64(width * height)
+	return actualFPS * (actualPixels / basePixels)
+}
+
+// denormalizeFromBaseFPS 将1080p基准速度转换到目标分辨率
+func denormalizeFromBaseFPS(normalizedFPS float64, width, height int) float64 {
+	const basePixels = 1920.0 * 1080.0
+	if width <= 0 || height <= 0 {
+		return normalizedFPS
+	}
+	targetPixels := float64(width * height)
+	return normalizedFPS * (basePixels / targetPixels)
+}
+
+// updateAvgFPS 更新全局平均处理速度（使用指数滑动平均）
+// 在每次解析 FFmpeg 进度输出时调用
+func (t *Transcoder) updateAvgFPS(taskFPS float64, width, height int) {
+	if taskFPS <= 0 {
+		return
+	}
+
+	normalizedFPS := normalizeToBaseFPS(taskFPS, width, height)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.avgNormalizedFPS <= 0 {
+		t.avgNormalizedFPS = normalizedFPS
+	} else {
+		// 指数滑动平均，α=0.2 表示新值权重20%
+		t.avgNormalizedFPS = t.avgNormalizedFPS*0.8 + normalizedFPS*0.2
+	}
+	t.avgFPSLastUpdate = time.Now()
+}
+
+// getDynamicPredictedFPS 获取动态预测FPS
+// 如果有5分钟内的实际观测数据，使用动态值；否则回退到固定基准值
+func (t *Transcoder) getDynamicPredictedFPS(width, height int) float64 {
+	// 注意：调用此方法前应已持有 t.mu 读锁
+	if t.avgNormalizedFPS > 0 && time.Since(t.avgFPSLastUpdate) < 5*time.Minute {
+		return denormalizeFromBaseFPS(t.avgNormalizedFPS, width, height)
+	}
+	// 回退到固定基准值
+	return predictProcessingFPS(width, height)
+}
+
 // getEffectiveFrames 获取考虑帧率上限后的有效帧数
 // 如果设置了帧率上限且源帧率超过上限，则按上限帧率计算实际输出帧数
 func getEffectiveFrames(task *TranscodeTask) int64 {
@@ -1325,48 +1385,64 @@ type GlobalStatus struct {
 }
 
 // GetGlobalStatus 获取全局状态，包括所有待处理任务的预估总剩余时间
+// 使用多线程并行计算模型：总剩余 = 当前批次最长剩余 + (待处理总时间 / 有效并行度)
 func (t *Transcoder) GetGlobalStatus() GlobalStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	var totalRemaining float64
 	var pendingCount, processingCount int
+	var pendingTotalTime float64 // 待处理任务的总预测时间
+	var maxProcessingETA float64 // 当前处理中任务的最长剩余时间
 
 	for _, task := range t.tasks {
 		switch task.Status {
 		case StatusPending:
 			pendingCount++
-			// 使用预测时间（基于分辨率，已考虑帧率上限）
-			if task.PredictedTotalTime > 0 {
-				totalRemaining += task.PredictedTotalTime
-			} else {
-				// 如果没有预测时间，使用有效帧数和基准速度估算
-				effectiveFrames := getEffectiveFrames(task)
-				if effectiveFrames > 0 {
-					predictedFPS := predictProcessingFPS(task.Width, task.Height)
-					totalRemaining += float64(effectiveFrames) / predictedFPS
-				}
+			// 使用动态预测速度计算待处理任务时间
+			predictedFPS := t.getDynamicPredictedFPS(task.Width, task.Height)
+			effectiveFrames := getEffectiveFrames(task)
+			if effectiveFrames > 0 && predictedFPS > 0 {
+				pendingTotalTime += float64(effectiveFrames) / predictedFPS
 			}
 
 		case StatusProcessing:
 			processingCount++
-			// 加上当前处理中任务的剩余时间
+			var taskETA float64
 			if task.ETASeconds > 0 {
-				totalRemaining += task.ETASeconds
+				taskETA = task.ETASeconds
 			} else {
-				// 如果有帧数信息，基于当前进度估算（使用有效帧数）
+				// 回退计算
 				effectiveFrames := getEffectiveFrames(task)
-				if effectiveFrames > 0 && task.ProcessedFrame > 0 {
-					remainingFrames := effectiveFrames - task.ProcessedFrame
-					if task.CurrentFPS > 0 {
-						totalRemaining += float64(remainingFrames) / task.CurrentFPS
-					} else {
-						predictedFPS := predictProcessingFPS(task.Width, task.Height)
-						totalRemaining += float64(remainingFrames) / predictedFPS
+				remainingFrames := effectiveFrames - task.ProcessedFrame
+				if remainingFrames > 0 {
+					predictedFPS := t.getDynamicPredictedFPS(task.Width, task.Height)
+					if predictedFPS > 0 {
+						taskETA = float64(remainingFrames) / predictedFPS
 					}
 				}
 			}
+			// 记录最长的剩余时间
+			if taskETA > maxProcessingETA {
+				maxProcessingETA = taskETA
+			}
 		}
+	}
+
+	// 计算有效并行度
+	effectiveWorkers := t.maxWorkers
+	totalActive := pendingCount + processingCount
+	if effectiveWorkers > totalActive {
+		effectiveWorkers = totalActive
+	}
+	if effectiveWorkers < 1 {
+		effectiveWorkers = 1
+	}
+
+	// 多线程并行计算总剩余时���
+	// 公式：当前批次最长剩余时间 + (待处理任务总时间 / 有效并行度)
+	var totalRemaining float64
+	if processingCount > 0 || pendingCount > 0 {
+		totalRemaining = maxProcessingETA + (pendingTotalTime / float64(effectiveWorkers))
 	}
 
 	return GlobalStatus{

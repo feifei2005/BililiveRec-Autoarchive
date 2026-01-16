@@ -309,12 +309,17 @@ function fillConfigForm(config) {
     document.getElementById('config-ffprobePath').value = config.ffprobePath || '';
     document.getElementById('config-maxConcurrent').value = config.maxConcurrent || 2;
     document.getElementById('config-minFileSizeKB').value = config.minFileSizeKB || 1024;
+    document.getElementById('config-scanIntervalMin').value = config.scanIntervalMin || 5;
+    document.getElementById('config-conflictMode').value = config.conflictMode || 'skip';
     document.getElementById('config-pathTemplate').value = config.pathTemplate || '';
     document.getElementById('config-checkVideoStream').checked = config.checkVideoStream || false;
     document.getElementById('config-discardFailedFiles').checked = config.discardFailedFiles || false;
+    document.getElementById('config-deleteOriginal').checked = config.deleteOriginal || false;
     document.getElementById('config-serverPort').value = config.serverPort || 8080;
     document.getElementById('config-webhookPath').value = config.webhookPath || '/webhook';
     document.getElementById('config-defaultCover').value = config.defaultCover || '';
+    document.getElementById('config-saveHistory').checked = config.saveHistory !== false; // 默认为 true
+    document.getElementById('config-streamerNameRegex').value = config.streamerNameRegex || '';
     
     // 自定义参数（数组转换为多行文本）
     if (config.customArgs && config.customArgs.length > 0) {
@@ -337,17 +342,22 @@ function getConfigFromForm() {
         ffprobePath: document.getElementById('config-ffprobePath').value.trim(),
         maxConcurrent: parseInt(document.getElementById('config-maxConcurrent').value) || 2,
         minFileSizeKB: parseInt(document.getElementById('config-minFileSizeKB').value) || 1024,
+        scanIntervalMin: parseInt(document.getElementById('config-scanIntervalMin').value) || 5,
+        conflictMode: document.getElementById('config-conflictMode').value || 'skip',
         pathTemplate: document.getElementById('config-pathTemplate').value.trim(),
         checkVideoStream: document.getElementById('config-checkVideoStream').checked,
         discardFailedFiles: document.getElementById('config-discardFailedFiles').checked,
+        deleteOriginal: document.getElementById('config-deleteOriginal').checked,
         serverPort: parseInt(document.getElementById('config-serverPort').value) || 8080,
         webhookPath: document.getElementById('config-webhookPath').value.trim(),
         defaultCover: document.getElementById('config-defaultCover').value.trim(),
+        saveHistory: document.getElementById('config-saveHistory').checked,
+        streamerNameRegex: document.getElementById('config-streamerNameRegex').value.trim(),
         customArgs: customArgs
     };
 }
 
-// 保存配置按钮
+// 保存并应用配置按钮
 document.getElementById('btn-save-config')?.addEventListener('click', async () => {
     try {
         const config = getConfigFromForm();
@@ -357,10 +367,10 @@ document.getElementById('btn-save-config')?.addEventListener('click', async () =
         const autoStartEnabled = document.getElementById('config-autoStart').checked;
         await window.go.app.App.SetAutoStart(autoStartEnabled);
         
-        showToast('配置已保存', 'success');
+        showToast('设置已成功应用', 'success');
     } catch (error) {
         console.error('保存配置失败:', error);
-        showToast(`保存失败: ${error}`, 'error');
+        showToast(`保存配置失败: ${error}`, 'error');
     }
 });
 
@@ -782,7 +792,6 @@ function renderTranscodeTaskItem(t) {
             <div class="task-video-info">
                 <span class="video-resolution">📐 ${resolution}</span>
                 ${framesInfo ? `<span class="video-frames">🎞️ ${framesInfo}</span>` : ''}
-                ${t.predictedTimeString ? `<span class="video-predicted">⏱️ 预计 ${t.predictedTimeString}</span>` : ''}
             </div>
         `;
     }

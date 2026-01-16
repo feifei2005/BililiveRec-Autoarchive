@@ -51,8 +51,24 @@ rules:
   streamer_name_regex: "-([^\\-]+)"
   
   # 输出路径模板
-  # 支持的变量: {{.OutputDir}}, {{.Streamer}}, {{.Year}}, {{.Month}}, {{.Day}}
-  # 示例输出: D:\Archive\Bilibili\某主播\2023\12\25\
+  # 支持的变量:
+  #   {{.OutputDir}}   - 输出根目录（如 D:\Archive\Bilibili）
+  #   {{.Streamer}}    - 主播名称（如 "筱田柴"，从文件夹名 - 后面的部分解析）
+  #   {{.StreamerUID}} - 主播UID（如 "1776261556"，从文件夹名 - 前面的部分解析）
+  #   {{.StreamerDir}} - 完整主播目录名（如 "1776261556-筱田柴"）
+  #   {{.Year}}        - 年份 YYYY
+  #   {{.Month}}       - 月份 MM
+  #   {{.Day}}         - 日期 DD
+  #
+  # 示例组合:
+  #   默认: {{.OutputDir}}\{{.Streamer}}\{{.Year}}\{{.Month}}\{{.Day}}
+  #         输出: D:\Archive\Bilibili\筱田柴\2023\12\25\
+  #   UID-名称: {{.OutputDir}}\{{.StreamerUID}}-{{.Streamer}}\{{.Year}}\{{.Month}}\{{.Day}}
+  #         输出: D:\Archive\Bilibili\1776261556-筱田柴\2023\12\25\
+  #   只用UID: {{.OutputDir}}\{{.StreamerUID}}\{{.Year}}\{{.Month}}\{{.Day}}
+  #         输出: D:\Archive\Bilibili\1776261556\2023\12\25\
+  #   保持原目录名: {{.OutputDir}}\{{.StreamerDir}}\{{.Year}}\{{.Month}}\{{.Day}}
+  #         输出: D:\Archive\Bilibili\1776261556-筱田柴\2023\12\25\
   path_template: "{{.OutputDir}}\\{{.Streamer}}\\{{.Year}}\\{{.Month}}\\{{.Day}}"
 
 # 封面设置
@@ -85,8 +101,16 @@ transcode:
   max_concurrent: 1
   # 输出目录（留空则输出到源文件同目录）
   output_dir: ""
-  # 转码完成后是否删除源文件
+  # 转码完成后是否删除源文件（旧配置，建议使用 delete_source_on_success）
   delete_source: false
+  # 帧率上限（0 或留空表示不限制）
+  # 支持的值: 24, 25, 29.97, 30, 50, 59.94, 60 或自定义值
+  # 视频帧率小于等于此值时保留原帧率，大于此值时限制到此值
+  max_fps: 0
+  # 是否保留封面（从源文件提取并嵌入到输出文件）
+  preserve_cover: true
+  # 转码成功后是否删除源文件
+  delete_source_on_success: false
 
 # 注意：数据库文件 (data.db) 默认保存在程序运行目录
 # 日志默认输出到控制台
