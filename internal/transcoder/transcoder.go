@@ -67,7 +67,7 @@ func New(cfg Config) *Transcoder {
 		ffmpegPath:  cfg.FFmpegPath,
 		ffprobePath: cfg.FFprobePath,
 		tasks:       make(map[string]*TranscodeTask),
-		taskQueue:   make(chan *TranscodeTask, 100),
+		taskQueue:   make(chan *TranscodeTask, 65535),
 		maxWorkers:  cfg.MaxWorkers,
 	}
 }
@@ -484,13 +484,12 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		}
 	}
 
-	t.mu.Lock()
-	t.tasks[task.ID] = task
-	t.mu.Unlock()
-
-	// 加入队列
+	// 加入队列（先入队成功，再加入 map，确保原子性）
 	select {
 	case t.taskQueue <- task:
+		t.mu.Lock()
+		t.tasks[task.ID] = task
+		t.mu.Unlock()
 		log.Printf("[transcoder] 任务已加入队列: %s", inputPath)
 	default:
 		return nil, fmt.Errorf("任务队列已满")
