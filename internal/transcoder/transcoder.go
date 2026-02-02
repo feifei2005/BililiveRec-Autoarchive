@@ -36,7 +36,7 @@ type Transcoder struct {
 	wg         sync.WaitGroup
 	maxWorkers int
 
-	// 任务序号计数器，用于保持添加顺序
+	// 任务序号��数器，用于保持添加顺序
 	taskSeqCounter int64
 
 	// 当前正在运行的 FFmpeg 进程，用于取消
@@ -49,6 +49,13 @@ type Transcoder struct {
 
 	// 上一个完成任务的归一化处理速度（用于预测待处理任务）
 	lastCompletedNormalizedFPS float64
+
+	// 暂停相关状态
+	pauseMu                    sync.RWMutex
+	transcodePaused            bool          // 立即暂停状态
+	transcodePauseAfterCurrent bool          // 当前任务后暂停状态
+	transcodePausedTime        time.Time     // 暂停开始时间
+	transcodeTotalPausedTime   time.Duration // 累计暂停时长（当前任务）
 }
 
 // Config 转码器配置
@@ -132,6 +139,36 @@ func (t *Transcoder) worker(id int) {
 	log.Printf("[transcoder] Worker %d 启动", id)
 
 	for {
+		// 检查是否处于"当前任务后暂停"状态
+		t.pauseMu.RLock()
+		shouldWait := t.transcodePauseAfterCurrent && !t.transcodePaused
+		t.pauseMu.RUnlock()
+
+		if shouldWait {
+			// 进入等待状态，不取新任务
+			log.Printf("[transcoder] Worker %d: 等待暂停恢复...", id)
+			for {
+				time.Sleep(500 * time.Millisecond)
+
+				// 检查是否取消或退出
+				select {
+				case <-t.ctx.Done():
+					log.Printf("[transcoder] Worker %d 停止", id)
+					return
+				default:
+				}
+
+				// 检查暂停状态是否解除
+				t.pauseMu.RLock()
+				stillWaiting := t.transcodePauseAfterCurrent
+				t.pauseMu.RUnlock()
+
+				if !stillWaiting {
+					break
+				}
+			}
+		}
+
 		select {
 		case <-t.ctx.Done():
 			log.Printf("[transcoder] Worker %d 停止", id)
@@ -657,14 +694,76 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 	}
 }
 
-// failTask 标记任务失败
+// failTask 标记任务失败并写入错误日志文件
 func (t *Transcoder) failTask(task *TranscodeTask, err error) {
 	t.mu.Lock()
 	task.Status = StatusFailed
 	task.Error = err.Error()
 	task.CompletedAt = time.Now()
 	t.mu.Unlock()
+
+	// 写入错误日志文件
+	logPath := t.writeErrorLog(task, err)
+	if logPath != "" {
+		t.mu.Lock()
+		task.ErrorLogPath = logPath
+		t.mu.Unlock()
+	}
+
 	log.Printf("[transcoder] 任务失败: %s, 错误: %v", task.InputPath, err)
+}
+
+// writeErrorLog 将错误信息写入日志文件
+// 返回日志文件路径，如果写入失败返回空字符串
+func (t *Transcoder) writeErrorLog(task *TranscodeTask, err error) string {
+	// 获取可执行文件所在目录，日志统一存放在可执行文件目录下的 logs 子目录
+	exePath, exeErr := os.Executable()
+	if exeErr != nil {
+		log.Printf("[transcoder] 无法获取可执行文件路径: %v", exeErr)
+		return ""
+	}
+	exeDir := filepath.Dir(exePath)
+	logDir := filepath.Join(exeDir, "logs")
+
+	// 创建日志目录
+	if mkErr := os.MkdirAll(logDir, 0755); mkErr != nil {
+		log.Printf("[transcoder] 创建错误日志目录失败: %v", mkErr)
+		return ""
+	}
+
+	// 生成日志文件名: {任务ID}_{时间戳}_error.log
+	timestamp := time.Now().Format("20060102_150405")
+	logFileName := fmt.Sprintf("%s_%s_error.log", task.ID, timestamp)
+	logPath := filepath.Join(logDir, logFileName)
+
+	// 构建日志内容
+	var content strings.Builder
+	content.WriteString("===========================================\n")
+	content.WriteString("转码任务错误日志\n")
+	content.WriteString("===========================================\n\n")
+	content.WriteString(fmt.Sprintf("任务ID: %s\n", task.ID))
+	content.WriteString(fmt.Sprintf("输入文件: %s\n", task.InputPath))
+	content.WriteString(fmt.Sprintf("输出文件: %s\n", task.OutputPath))
+	content.WriteString(fmt.Sprintf("创建时间: %s\n", task.CreatedAt.Format("2006-01-02 15:04:05")))
+	content.WriteString(fmt.Sprintf("开始时间: %s\n", task.StartedAt.Format("2006-01-02 15:04:05")))
+	content.WriteString(fmt.Sprintf("失败时间: %s\n", task.CompletedAt.Format("2006-01-02 15:04:05")))
+	content.WriteString(fmt.Sprintf("视频信息: %dx%d, %.2f fps, %d 帧\n", task.Width, task.Height, task.FrameRate, task.TotalFrames))
+	content.WriteString(fmt.Sprintf("处理进度: %.1f%% (%d/%d 帧)\n", task.Progress, task.ProcessedFrame, task.TotalFrames))
+	content.WriteString(fmt.Sprintf("FFmpeg 参数: %s\n", task.Config.CustomArgs))
+	content.WriteString("\n===========================================\n")
+	content.WriteString("错误信息\n")
+	content.WriteString("===========================================\n\n")
+	content.WriteString(err.Error())
+	content.WriteString("\n")
+
+	// 写入文件
+	if writeErr := os.WriteFile(logPath, []byte(content.String()), 0644); writeErr != nil {
+		log.Printf("[transcoder] 写入错误日志文件失败: %v", writeErr)
+		return ""
+	}
+
+	log.Printf("[transcoder] 错误日志已保存: %s", logPath)
+	return logPath
 }
 
 // getLastLines 获取字符串的最后 N 行
@@ -1162,9 +1261,24 @@ func (t *Transcoder) parseProgressWithActivity(task *TranscodeTask, stdout io.Re
 // updateETA 根据已处理帧数和当前 FPS 计算剩余时间、已用时间和进度
 // 必须在持有 t.mu 锁的情况下调用
 func (t *Transcoder) updateETA(task *TranscodeTask) {
-	// 更新已用时间
+	// 检查暂停状态
+	t.pauseMu.RLock()
+	isPaused := t.transcodePaused
+	totalPausedTime := t.transcodeTotalPausedTime
+	// 如果当前处于暂停状态，加上当前暂停持续时间
+	if isPaused && !t.transcodePausedTime.IsZero() {
+		totalPausedTime += time.Since(t.transcodePausedTime)
+	}
+	t.pauseMu.RUnlock()
+
+	// 更新已用时间（排除暂停时长）
 	if !task.StartedAt.IsZero() {
-		task.ElapsedSeconds = time.Since(task.StartedAt).Seconds()
+		totalElapsed := time.Since(task.StartedAt)
+		effectiveElapsed := totalElapsed - totalPausedTime
+		if effectiveElapsed < 0 {
+			effectiveElapsed = 0
+		}
+		task.ElapsedSeconds = effectiveElapsed.Seconds()
 		task.ElapsedString = formatETADuration(task.ElapsedSeconds)
 	}
 
@@ -1177,6 +1291,12 @@ func (t *Transcoder) updateETA(task *TranscodeTask) {
 		if task.Progress > 100 {
 			task.Progress = 100
 		}
+	}
+
+	// 如果处于暂停状态，显示"已暂停"
+	if isPaused {
+		task.ETAString = "已暂停"
+		return
 	}
 
 	// 需要有有效帧数和当前 FPS 才能计算 ETA
@@ -1485,4 +1605,146 @@ func (t *Transcoder) GetGlobalStatus() GlobalStatus {
 		PendingCount:          pendingCount,
 		ProcessingCount:       processingCount,
 	}
+}
+
+// ================== 转码暂停功能 ==================
+
+// TranscodePauseStatus 转码暂停状态
+type TranscodePauseStatus struct {
+	Paused            bool   `json:"paused"`            // 是否立即暂停
+	PauseAfterCurrent bool   `json:"pauseAfterCurrent"` // 是否当前任务后暂停
+	PausedTimeStr     string `json:"pausedTimeStr"`     // 暂停时长字符串
+}
+
+// PauseTranscode 立即暂停当前转码进程
+func (t *Transcoder) PauseTranscode() error {
+	t.pauseMu.Lock()
+	defer t.pauseMu.Unlock()
+
+	if t.transcodePaused {
+		return nil // 已经暂停
+	}
+
+	t.transcodePaused = true
+	t.transcodePausedTime = time.Now()
+
+	// 暂停当前正在运行的 FFmpeg 进程
+	t.currentCmdMu.Lock()
+	cmd := t.currentCmd
+	t.currentCmdMu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		if err := suspendProcess(cmd); err != nil {
+			log.Printf("[transcoder] 暂停 FFmpeg 进程失败: %v", err)
+			return fmt.Errorf("暂停进程失败: %w", err)
+		}
+		log.Println("[transcoder] 转码已暂停")
+	}
+
+	return nil
+}
+
+// ResumeTranscode 恢复转码进程
+func (t *Transcoder) ResumeTranscode() error {
+	t.pauseMu.Lock()
+	defer t.pauseMu.Unlock()
+
+	if !t.transcodePaused {
+		return nil // 未暂停
+	}
+
+	// 恢复当前正在运行的 FFmpeg 进程
+	t.currentCmdMu.Lock()
+	cmd := t.currentCmd
+	t.currentCmdMu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		if err := resumeProcess(cmd); err != nil {
+			log.Printf("[transcoder] 恢复 FFmpeg 进程失败: %v", err)
+			return fmt.Errorf("恢复进程失败: %w", err)
+		}
+	}
+
+	// 累加暂停时长
+	t.transcodeTotalPausedTime += time.Since(t.transcodePausedTime)
+	t.transcodePaused = false
+	t.transcodePausedTime = time.Time{}
+
+	log.Println("[transcoder] 转码已恢复")
+	return nil
+}
+
+// PauseTranscodeAfterCurrent 设置当前任务后暂停标志
+func (t *Transcoder) PauseTranscodeAfterCurrent() {
+	t.pauseMu.Lock()
+	defer t.pauseMu.Unlock()
+
+	t.transcodePauseAfterCurrent = true
+	log.Println("[transcoder] 已设置：当前任务完成后暂停转码")
+}
+
+// CancelPauseTranscodeAfterCurrent 取消当前任务后暂停
+func (t *Transcoder) CancelPauseTranscodeAfterCurrent() {
+	t.pauseMu.Lock()
+	defer t.pauseMu.Unlock()
+
+	t.transcodePauseAfterCurrent = false
+	log.Println("[transcoder] 已取消：当前任务后暂停转码")
+}
+
+// GetTranscodePauseStatus 获取转码暂停状态
+func (t *Transcoder) GetTranscodePauseStatus() TranscodePauseStatus {
+	t.pauseMu.RLock()
+	defer t.pauseMu.RUnlock()
+
+	status := TranscodePauseStatus{
+		Paused:            t.transcodePaused,
+		PauseAfterCurrent: t.transcodePauseAfterCurrent,
+	}
+
+	if t.transcodePaused && !t.transcodePausedTime.IsZero() {
+		duration := time.Since(t.transcodePausedTime)
+		status.PausedTimeStr = formatTranscodePauseDuration(duration)
+	}
+
+	return status
+}
+
+// IsTranscodePaused 检查转码是否暂停
+func (t *Transcoder) IsTranscodePaused() bool {
+	t.pauseMu.RLock()
+	defer t.pauseMu.RUnlock()
+	return t.transcodePaused
+}
+
+// ShouldPauseAfterCurrentTranscode 检查是否需要在当前任务后暂停
+func (t *Transcoder) ShouldPauseAfterCurrentTranscode() bool {
+	t.pauseMu.RLock()
+	defer t.pauseMu.RUnlock()
+	return t.transcodePauseAfterCurrent
+}
+
+// GetTranscodeTotalPausedTime 获取累计暂停时长
+func (t *Transcoder) GetTranscodeTotalPausedTime() time.Duration {
+	t.pauseMu.RLock()
+	defer t.pauseMu.RUnlock()
+	return t.transcodeTotalPausedTime
+}
+
+// ResetTranscodePausedTime 重置暂停时长（任务开始时调用）
+func (t *Transcoder) ResetTranscodePausedTime() {
+	t.pauseMu.Lock()
+	defer t.pauseMu.Unlock()
+	t.transcodeTotalPausedTime = 0
+}
+
+// formatTranscodePauseDuration 格式化暂停时长
+func formatTranscodePauseDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d秒", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d分%d秒", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%d小时%d分", int(d.Hours()), int(d.Minutes())%60)
 }

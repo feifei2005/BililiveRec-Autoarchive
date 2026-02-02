@@ -105,6 +105,61 @@
                     <h1>任务列表</h1>
                 </div>
                 
+                <!-- 转封装进度显示区域 -->
+                <div class="remux-progress-panel" id="remux-progress-panel">
+                    <h3>📦 转封装进度</h3>
+                    <div class="remux-progress-content">
+                        <div class="remux-current-file" id="remux-current-file">--</div>
+                        <div class="remux-progress-bar-container">
+                            <div class="remux-progress-bar" id="remux-progress-bar" style="width: 0%"></div>
+                            <span class="remux-progress-text" id="remux-progress-text">0%</span>
+                        </div>
+                        <div class="remux-info-grid">
+                            <div class="remux-info-item">
+                                <span class="remux-info-label">文件大小</span>
+                                <span class="remux-info-value" id="remux-source-size">--</span>
+                            </div>
+                            <div class="remux-info-item">
+                                <span class="remux-info-label">已写入</span>
+                                <span class="remux-info-value" id="remux-written-size">--</span>
+                            </div>
+                            <div class="remux-info-item">
+                                <span class="remux-info-label">速度</span>
+                                <span class="remux-info-value" id="remux-speed">--</span>
+                            </div>
+                            <div class="remux-info-item">
+                                <span class="remux-info-label">已用时间</span>
+                                <span class="remux-info-value" id="remux-elapsed">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 转封装暂停控制按钮组 -->
+                <div class="pause-control-bar" id="remux-pause-controls">
+                    <div class="pause-status" id="remux-pause-status">
+                        <span class="pause-status-text">运行中</span>
+                    </div>
+                    <div class="pause-buttons">
+                        <button id="btn-pause-remux" class="btn btn-warning" title="立即暂停当前进程">
+                            <span class="btn-icon">⏸️</span>
+                            立即暂停
+                        </button>
+                        <button id="btn-resume-remux" class="btn btn-success" style="display: none;" title="恢复暂停的进程">
+                            <span class="btn-icon">▶️</span>
+                            恢复
+                        </button>
+                        <button id="btn-pause-remux-after-current" class="btn btn-secondary" title="当前任务完成后暂停，释放资源">
+                            <span class="btn-icon">⏭️</span>
+                            当前任务后暂停
+                        </button>
+                        <button id="btn-cancel-pause-remux-after" class="btn btn-secondary has-tooltip" style="display: none;" data-tooltip="撤回设置的当前任务后暂停">
+                            <span class="btn-icon">❌</span>
+                            取消暂停
+                        </button>
+                    </div>
+                </div>
+                
                 <!-- 任务状态分页标签 -->
                 <div class="status-tabs" id="task-status-tabs">
                     <button class="status-tab-btn active" data-status="pending">
@@ -248,6 +303,13 @@
                                 <label for="config-webhookPath">Webhook 路径</label>
                                 <input type="text" id="config-webhookPath" class="text-input" placeholder="/webhook">
                             </div>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="config-webhookEnabled" checked>
+                                <span class="checkbox-text">启用 Webhook 自动添加任务</span>
+                            </label>
+                            <span class="form-hint">关闭后，录播姬发送的文件关闭事件将被忽略，不会自动添加转封装任务</span>
                         </div>
                     </div>
 
@@ -435,6 +497,31 @@
                         <div class="global-eta-bar" id="transcode-global-eta">
                             <span class="global-eta-label">预估总剩余时间：</span>
                             <span class="global-eta-value" id="transcode-global-eta-value">--</span>
+                        </div>
+                        
+                        <!-- 暂停控制按钮组 -->
+                        <div class="pause-control-bar" id="transcode-pause-controls">
+                            <div class="pause-status" id="transcode-pause-status">
+                                <span class="pause-status-text">运行中</span>
+                            </div>
+                            <div class="pause-buttons">
+                                <button id="btn-pause-transcode" class="btn btn-warning" title="立即暂停当前进程">
+                                    <span class="btn-icon">⏸️</span>
+                                    立即暂停
+                                </button>
+                                <button id="btn-resume-transcode" class="btn btn-success" style="display: none;" title="恢复暂停的进程">
+                                    <span class="btn-icon">▶️</span>
+                                    恢复
+                                </button>
+                                <button id="btn-pause-after-current" class="btn btn-secondary" title="当前任务完成后暂���，释放资源">
+                                    <span class="btn-icon">⏭️</span>
+                                    当前任务后暂停
+                                </button>
+                                <button id="btn-cancel-pause-after" class="btn btn-secondary has-tooltip" style="display: none;" data-tooltip="撤回设置的当前任务后暂停">
+                                    <span class="btn-icon">❌</span>
+                                    取消暂停
+                                </button>
+                            </div>
                         </div>
                         
                         <!-- 转码任务状态分页标签 -->

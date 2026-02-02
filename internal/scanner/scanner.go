@@ -50,7 +50,7 @@ type Scanner interface {
 
 // Config 扫描器配置
 type Config struct {
-	InputDir      string        // 扫描目录
+	InputDirFunc  func() string // 获取扫描目录的回调函数（支持热重载）
 	Extensions    []string      // 要匹配的文件扩展名
 	ScanInterval  time.Duration // 扫描间隔
 	MinFileSize   int64         // 最小文件大小（字节）
@@ -108,8 +108,11 @@ func (s *DefaultScanner) Files() <-chan FileInfo {
 func (s *DefaultScanner) Scan() ([]FileGroup, error) {
 	var groups []FileGroup
 
-	// 检查输入目录是否存在
-	inputDir := s.config.InputDir
+	// 通过回调函数获取当前的输入目录（支持热重载）
+	inputDir := ""
+	if s.config.InputDirFunc != nil {
+		inputDir = s.config.InputDirFunc()
+	}
 	if inputDir == "" {
 		log.Println("[SCANNER] 扫描跳过：InputDir 为空")
 		return groups, nil

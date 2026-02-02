@@ -192,9 +192,243 @@ async function loadTasksPage() {
     try {
         const tasks = await window.go.app.App.GetTasks();
         renderTasks(tasks);
+        
+        // 更新转封装进度
+        await updateRemuxProgress();
+        
+        // 更新转封装暂停状态
+        await updateRemuxPauseStatus();
     } catch (error) {
         console.error('加载任务列表失败:', error);
         showToast('加载任务失败', 'error');
+    }
+}
+
+// ==================== 转封装进度显示 ====================
+
+// 更新转封装进度显示
+async function updateRemuxProgress() {
+    try {
+        const progress = await window.go.app.App.GetRemuxProgress();
+        const panel = document.getElementById('remux-progress-panel');
+        
+        if (!panel) return;
+        
+        // 进度面板始终显示
+        panel.style.display = 'block';
+        
+        // 检查是否有活跃的转封装任务
+        const isActive = progress && progress.isActive;
+        
+        // 更新暂停状态样式
+        if (isActive && progress.isPaused) {
+            panel.classList.add('paused');
+            panel.classList.remove('active');
+        } else if (isActive) {
+            panel.classList.remove('paused');
+            panel.classList.add('active');
+        } else {
+            panel.classList.remove('paused');
+            panel.classList.remove('active');
+        }
+        
+        // 更新当前文件名
+        const currentFileEl = document.getElementById('remux-current-file');
+        if (currentFileEl) {
+            if (isActive) {
+                currentFileEl.textContent = progress.currentFileStr || formatPath(progress.currentFile) || '--';
+            } else {
+                currentFileEl.textContent = '暂无任务';
+            }
+        }
+        
+        // 更新进度条
+        const progressBar = document.getElementById('remux-progress-bar');
+        const progressText = document.getElementById('remux-progress-text');
+        if (progressBar) {
+            progressBar.style.width = isActive ? `${progress.progress || 0}%` : '0%';
+        }
+        if (progressText) {
+            progressText.textContent = isActive ? `${(progress.progress || 0).toFixed(1)}%` : '0%';
+        }
+        
+        // 更新文件大小
+        const sourceSizeEl = document.getElementById('remux-source-size');
+        if (sourceSizeEl) {
+            sourceSizeEl.textContent = isActive ? (progress.sourceSizeStr || '--') : '--';
+        }
+        
+        // 更新已写入量
+        const writtenSizeEl = document.getElementById('remux-written-size');
+        if (writtenSizeEl) {
+            writtenSizeEl.textContent = isActive ? (progress.writtenSizeStr || '--') : '--';
+        }
+        
+        // 更新速度
+        const speedEl = document.getElementById('remux-speed');
+        if (speedEl) {
+            speedEl.textContent = isActive ? (progress.speedStr || '--') : '--';
+        }
+        
+        // 更新已用时间
+        const elapsedEl = document.getElementById('remux-elapsed');
+        if (elapsedEl) {
+            elapsedEl.textContent = isActive ? (progress.elapsedStr || '--') : '--';
+        }
+        
+    } catch (error) {
+        console.error('获取转封装进度失败:', error);
+        // 出错时显示占位符但不隐藏面板
+        const panel = document.getElementById('remux-progress-panel');
+        if (panel) {
+            panel.style.display = 'block';
+            panel.classList.remove('paused', 'active');
+        }
+        // 设置占位符
+        const currentFileEl = document.getElementById('remux-current-file');
+        if (currentFileEl) currentFileEl.textContent = '暂无任务';
+        const progressBar = document.getElementById('remux-progress-bar');
+        if (progressBar) progressBar.style.width = '0%';
+        const progressText = document.getElementById('remux-progress-text');
+        if (progressText) progressText.textContent = '0%';
+        const sourceSizeEl = document.getElementById('remux-source-size');
+        if (sourceSizeEl) sourceSizeEl.textContent = '--';
+        const writtenSizeEl = document.getElementById('remux-written-size');
+        if (writtenSizeEl) writtenSizeEl.textContent = '--';
+        const speedEl = document.getElementById('remux-speed');
+        if (speedEl) speedEl.textContent = '--';
+        const elapsedEl = document.getElementById('remux-elapsed');
+        if (elapsedEl) elapsedEl.textContent = '--';
+    }
+}
+
+// ==================== 转封装暂停控制 ====================
+
+// 转封装暂停状态
+const remuxPauseState = {
+    paused: false,
+    pauseAfterCurrent: false
+};
+
+// 初始化转封装暂停控制按钮
+function initRemuxPauseControls() {
+    // 立即暂停按钮
+    document.getElementById('btn-pause-remux')?.addEventListener('click', pauseRemux);
+    
+    // 恢复按钮
+    document.getElementById('btn-resume-remux')?.addEventListener('click', resumeRemux);
+    
+    // 当前任务后暂停按钮
+    document.getElementById('btn-pause-remux-after-current')?.addEventListener('click', pauseRemuxAfterCurrent);
+    
+    // 取消当前任务后暂停按钮
+    document.getElementById('btn-cancel-pause-remux-after')?.addEventListener('click', cancelPauseRemuxAfterCurrent);
+}
+
+// 立即暂停转封装
+async function pauseRemux() {
+    try {
+        await window.go.app.App.PauseRemux();
+        showToast('转封装已暂停', 'success');
+        await updateRemuxPauseStatus();
+    } catch (error) {
+        console.error('暂停转封装失败:', error);
+        showToast(`暂停失败: ${error}`, 'error');
+    }
+}
+
+// 恢复转封装
+async function resumeRemux() {
+    try {
+        await window.go.app.App.ResumeRemux();
+        showToast('转封装已恢复', 'success');
+        await updateRemuxPauseStatus();
+    } catch (error) {
+        console.error('恢复转封装失败:', error);
+        showToast(`恢复失败: ${error}`, 'error');
+    }
+}
+
+// 当前任务后暂停转封装
+async function pauseRemuxAfterCurrent() {
+    try {
+        await window.go.app.App.PauseRemuxAfterCurrent();
+        showToast('已设置：当前任务完成后暂停', 'info');
+        await updateRemuxPauseStatus();
+    } catch (error) {
+        console.error('设置暂停失败:', error);
+        showToast(`设置失败: ${error}`, 'error');
+    }
+}
+
+// 取消当前任务后暂停转封装
+async function cancelPauseRemuxAfterCurrent() {
+    try {
+        await window.go.app.App.CancelPauseRemuxAfterCurrent();
+        showToast('已取消当前任务后暂停', 'info');
+        await updateRemuxPauseStatus();
+    } catch (error) {
+        console.error('取消暂停失败:', error);
+        showToast(`取消失败: ${error}`, 'error');
+    }
+}
+
+// 更新转封装暂停状态显示
+async function updateRemuxPauseStatus() {
+    try {
+        const status = await window.go.app.App.GetRemuxPauseStatus();
+        remuxPauseState.paused = status.paused;
+        remuxPauseState.pauseAfterCurrent = status.pauseAfterCurrent;
+        
+        const pauseBtn = document.getElementById('btn-pause-remux');
+        const resumeBtn = document.getElementById('btn-resume-remux');
+        const pauseAfterBtn = document.getElementById('btn-pause-remux-after-current');
+        const cancelPauseAfterBtn = document.getElementById('btn-cancel-pause-remux-after');
+        const statusText = document.querySelector('#remux-pause-status .pause-status-text');
+        const pauseControls = document.getElementById('remux-pause-controls');
+        
+        // 暂停控制面板始终显示
+        if (pauseControls) {
+            pauseControls.style.display = 'flex';
+        }
+        
+        if (status.paused) {
+            // 已暂停状态
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            if (resumeBtn) resumeBtn.style.display = 'inline-flex';
+            if (pauseAfterBtn) pauseAfterBtn.style.display = 'none';
+            if (cancelPauseAfterBtn) cancelPauseAfterBtn.style.display = 'none';
+            
+            if (statusText) {
+                const pausedTimeStr = status.pausedTimeStr ? ` (${status.pausedTimeStr})` : '';
+                statusText.textContent = `已暂停${pausedTimeStr}`;
+                statusText.className = 'pause-status-text paused';
+            }
+        } else if (status.pauseAfterCurrent) {
+            // 等待当前任务后暂停
+            if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+            if (resumeBtn) resumeBtn.style.display = 'none';
+            if (pauseAfterBtn) pauseAfterBtn.style.display = 'none';
+            if (cancelPauseAfterBtn) cancelPauseAfterBtn.style.display = 'inline-flex';
+            
+            if (statusText) {
+                statusText.textContent = '等待当前任务完成后暂停...';
+                statusText.className = 'pause-status-text waiting';
+            }
+        } else {
+            // 正常运行状态
+            if (pauseBtn) pauseBtn.style.display = 'inline-flex';
+            if (resumeBtn) resumeBtn.style.display = 'none';
+            if (pauseAfterBtn) pauseAfterBtn.style.display = 'inline-flex';
+            if (cancelPauseAfterBtn) cancelPauseAfterBtn.style.display = 'none';
+            
+            if (statusText) {
+                statusText.textContent = '运行中';
+                statusText.className = 'pause-status-text running';
+            }
+        }
+    } catch (error) {
+        console.error('获取转封装暂停状态失败:', error);
     }
 }
 
@@ -317,6 +551,7 @@ function fillConfigForm(config) {
     document.getElementById('config-deleteOriginal').checked = config.deleteOriginal || false;
     document.getElementById('config-serverPort').value = config.serverPort || 8080;
     document.getElementById('config-webhookPath').value = config.webhookPath || '/webhook';
+    document.getElementById('config-webhookEnabled').checked = config.webhookEnabled !== false; // 默认为 true
     document.getElementById('config-defaultCover').value = config.defaultCover || '';
     document.getElementById('config-saveHistory').checked = config.saveHistory !== false; // 默认为 true
     document.getElementById('config-streamerNameRegex').value = config.streamerNameRegex || '';
@@ -350,6 +585,7 @@ function getConfigFromForm() {
         deleteOriginal: document.getElementById('config-deleteOriginal').checked,
         serverPort: parseInt(document.getElementById('config-serverPort').value) || 8080,
         webhookPath: document.getElementById('config-webhookPath').value.trim(),
+        webhookEnabled: document.getElementById('config-webhookEnabled').checked,
         defaultCover: document.getElementById('config-defaultCover').value.trim(),
         saveHistory: document.getElementById('config-saveHistory').checked,
         streamerNameRegex: document.getElementById('config-streamerNameRegex').value.trim(),
@@ -421,7 +657,11 @@ document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
 // 转码状态
 const transcodeState = {
     scannedVideos: [],
-    isPolling: false
+    isPolling: false,
+    pauseStatus: {
+        paused: false,
+        pauseAfterCurrent: false
+    }
 };
 
 // FFmpeg 预设参数
@@ -666,6 +906,9 @@ async function loadTranscodeTasks() {
         // 获取并更新全局状态（总剩余时间）
         await updateGlobalTranscodeStatus();
         
+        // 更新暂停状态
+        await updateTranscodePauseStatus();
+        
         return hasActiveTasks;
     } catch (error) {
         console.error('加载转码任务失败:', error);
@@ -767,22 +1010,6 @@ function renderTranscodeTaskItem(t) {
     const statusClass = getTranscodeStatusClass(t.status);
     const statusText = getTranscodeStatusText(t.status);
     
-    // 格式化错误显示
-    let errorHtml = '';
-    if (t.error && t.status === 'failed') {
-        errorHtml = `
-            <details class="task-error-details">
-                <summary class="task-error-summary">
-                    <span class="error-icon">⚠️</span>
-                    查看错误详情
-                </summary>
-                <pre class="ffmpeg-output">${escapeHtml(t.error)}</pre>
-            </details>
-        `;
-    } else if (t.error) {
-        errorHtml = `<div class="task-error-msg">${escapeHtml(t.error)}</div>`;
-    }
-    
     // 视频信息（分辨率、帧数、预计时间）
     let videoInfoHtml = '';
     if (t.width && t.height) {
@@ -827,6 +1054,15 @@ function renderTranscodeTaskItem(t) {
         `;
     }
     
+    // 操作按钮
+    let actionsHtml = '';
+    if (t.status === 'processing' || t.status === 'pending') {
+        actionsHtml = `<button class="btn btn-sm btn-danger" onclick="cancelTranscodeTask('${t.id}')">取消</button>`;
+    } else if ((t.status === 'failed' || t.status === 'cancelled') && t.errorLogPath) {
+        // 对于有错误日志的失败/取消任务，显示"查看错误"按钮
+        actionsHtml = `<button class="btn btn-sm btn-secondary" onclick="openTranscodeErrorLog('${t.id}')">📄 查看错误日志</button>`;
+    }
+    
     return `
         <div class="transcode-task-item ${statusClass}">
             <div class="task-header">
@@ -835,14 +1071,21 @@ function renderTranscodeTaskItem(t) {
             </div>
             ${videoInfoHtml}
             ${progressHtml}
-            ${errorHtml}
             <div class="task-actions">
-                ${(t.status === 'processing' || t.status === 'pending') ?
-                    `<button class="btn btn-sm btn-danger" onclick="cancelTranscodeTask('${t.id}')">取消</button>`
-                    : ''}
+                ${actionsHtml}
             </div>
         </div>
     `;
+}
+
+// 打开转码错误日志
+async function openTranscodeErrorLog(taskId) {
+    try {
+        await window.go.app.App.OpenTranscodeErrorLog(taskId);
+    } catch (error) {
+        console.error('打开错误日志失败:', error);
+        showToast(`打开错误日志失败: ${error}`, 'error');
+    }
 }
 
 // 获取转码状态样式类
@@ -1022,8 +1265,128 @@ function initTranscodeEvents() {
     // 初始化拖拽区域
     initDropZone();
     
-    // 初始化帧率上限输入框交互
+    // 初始化��率上限输入框交互
     initMaxFpsInput();
+    
+    // 初始化暂停控制按钮
+    initTranscodePauseControls();
+}
+
+// ==================== 转码暂停控制 ====================
+
+// 初始化暂停控制按钮
+function initTranscodePauseControls() {
+    // 立即暂停按钮
+    document.getElementById('btn-pause-transcode')?.addEventListener('click', pauseTranscode);
+    
+    // 恢复按钮
+    document.getElementById('btn-resume-transcode')?.addEventListener('click', resumeTranscode);
+    
+    // 当前任务后暂停按钮
+    document.getElementById('btn-pause-after-current')?.addEventListener('click', pauseTranscodeAfterCurrent);
+    
+    // 取消当前任务后暂停按钮
+    document.getElementById('btn-cancel-pause-after')?.addEventListener('click', cancelPauseTranscodeAfterCurrent);
+}
+
+// 立即暂停转码
+async function pauseTranscode() {
+    try {
+        await window.go.app.App.PauseTranscode();
+        showToast('转码已暂停', 'success');
+        await updateTranscodePauseStatus();
+    } catch (error) {
+        console.error('暂停转码失败:', error);
+        showToast(`暂停失败: ${error}`, 'error');
+    }
+}
+
+// 恢复转码
+async function resumeTranscode() {
+    try {
+        await window.go.app.App.ResumeTranscode();
+        showToast('转码已恢复', 'success');
+        await updateTranscodePauseStatus();
+    } catch (error) {
+        console.error('恢复转码失败:', error);
+        showToast(`恢复失败: ${error}`, 'error');
+    }
+}
+
+// 当前任务后暂停
+async function pauseTranscodeAfterCurrent() {
+    try {
+        await window.go.app.App.PauseTranscodeAfterCurrent();
+        showToast('已设置：当前任务完成后暂停', 'info');
+        await updateTranscodePauseStatus();
+    } catch (error) {
+        console.error('设置暂停失败:', error);
+        showToast(`设置失败: ${error}`, 'error');
+    }
+}
+
+// 取消当前任务后暂停
+async function cancelPauseTranscodeAfterCurrent() {
+    try {
+        await window.go.app.App.CancelPauseTranscodeAfterCurrent();
+        showToast('已取消当前任务后暂停', 'info');
+        await updateTranscodePauseStatus();
+    } catch (error) {
+        console.error('取消暂停失败:', error);
+        showToast(`取消失败: ${error}`, 'error');
+    }
+}
+
+// 更新暂停状态显示
+async function updateTranscodePauseStatus() {
+    try {
+        const status = await window.go.app.App.GetTranscodePauseStatus();
+        transcodeState.pauseStatus = status;
+        
+        const pauseBtn = document.getElementById('btn-pause-transcode');
+        const resumeBtn = document.getElementById('btn-resume-transcode');
+        const pauseAfterBtn = document.getElementById('btn-pause-after-current');
+        const cancelPauseAfterBtn = document.getElementById('btn-cancel-pause-after');
+        const statusText = document.querySelector('#transcode-pause-status .pause-status-text');
+        
+        if (status.paused) {
+            // 已暂停状态
+            pauseBtn.style.display = 'none';
+            resumeBtn.style.display = 'inline-flex';
+            pauseAfterBtn.style.display = 'none';
+            cancelPauseAfterBtn.style.display = 'none';
+            
+            if (statusText) {
+                const pausedTimeStr = status.pausedTimeStr ? ` (${status.pausedTimeStr})` : '';
+                statusText.textContent = `已暂停${pausedTimeStr}`;
+                statusText.className = 'pause-status-text paused';
+            }
+        } else if (status.pauseAfterCurrent) {
+            // 等待当前任务后暂停
+            pauseBtn.style.display = 'inline-flex';
+            resumeBtn.style.display = 'none';
+            pauseAfterBtn.style.display = 'none';
+            cancelPauseAfterBtn.style.display = 'inline-flex';
+            
+            if (statusText) {
+                statusText.textContent = '等待当前任务完成后暂停...';
+                statusText.className = 'pause-status-text waiting';
+            }
+        } else {
+            // 正常运行状态
+            pauseBtn.style.display = 'inline-flex';
+            resumeBtn.style.display = 'none';
+            pauseAfterBtn.style.display = 'inline-flex';
+            cancelPauseAfterBtn.style.display = 'none';
+            
+            if (statusText) {
+                statusText.textContent = '运行中';
+                statusText.className = 'pause-status-text running';
+            }
+        }
+    } catch (error) {
+        console.error('获取暂停状态失败:', error);
+    }
 }
 
 // 初始化帧率上限输入框交互
@@ -1166,14 +1529,14 @@ async function handleDrop(e) {
 // ==================== 自动刷新 ====================
 
 function startAutoRefresh() {
-    // 每 3 秒刷新一次当前页面
+    // 每 1 秒刷新一次当前页面（转封装进度需要更频繁的刷新）
     state.refreshInterval = setInterval(() => {
         if (state.currentPage === 'status') {
             loadStatusPage();
         } else if (state.currentPage === 'tasks') {
             loadTasksPage();
         }
-    }, 3000);
+    }, 1000);
 }
 
 function stopAutoRefresh() {
@@ -1207,6 +1570,9 @@ async function initApp() {
     
     // 初始化转码事件
     initTranscodeEvents();
+    
+    // 初始化转封装暂停控制按钮
+    initRemuxPauseControls();
     
     // 加载系统信息
     await loadSystemInfo();

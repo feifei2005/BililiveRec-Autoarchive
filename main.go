@@ -96,8 +96,15 @@ func setupFileLogging() {
 	}
 	exeDir := filepath.Dir(exePath)
 
+	// 创建 logs 目录
+	logsDir := filepath.Join(exeDir, "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		log.Printf("警告: 无法创建日志目录 %s: %v", logsDir, err)
+		return
+	}
+
 	// 创建日志文件路径
-	logPath := filepath.Join(exeDir, "app.log")
+	logPath := filepath.Join(logsDir, "app.log")
 
 	// 配置日志轮转
 	// lumberjack.Logger 实现了 io.WriteCloser 接口
@@ -196,9 +203,9 @@ func (a *Application) Initialize() error {
 	// 4. 初始化扫描器
 	log.Println("初始化扫描器...")
 	a.scanner = scanner.New(scanner.Config{
-		InputDir:    a.config.Processing.InputDir,
-		Extensions:  []string{".flv"},
-		MinFileSize: a.config.Processing.MinFileSizeKB * 1024,
+		InputDirFunc: func() string { return a.config.Processing.InputDir },
+		Extensions:   []string{".flv"},
+		MinFileSize:  a.config.Processing.MinFileSizeKB * 1024,
 	})
 
 	// 5. 初始化处理器
@@ -239,6 +246,12 @@ func (a *Application) Initialize() error {
 
 	// 注册 Webhook 事件处理
 	a.webhook.On(webhook.EventFileClosed, func(event *webhook.Event) error {
+		// 检查 Webhook 是否启用（支持热重载）
+		if !a.config.Server.WebhookEnabled {
+			log.Printf("Webhook: 已禁用，跳过文件: %s", event.EventData.RelativePath)
+			return nil
+		}
+
 		// 获取完整文件路径
 		fullPath := a.webhook.GetFullPath(event.EventData.RelativePath)
 		log.Printf("Webhook: 收到文件关闭事件，文件: %s", fullPath)

@@ -1919,3 +1919,368 @@ body {
         width: 100%;
     }
 }
+
+/* ==================== 暂停控制样式 ==================== */
+
+/* 暂停控制栏 */
+.pause-control-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+/* 暂停状态显示 */
+.pause-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.pause-status-icon {
+    font-size: 1.25rem;
+}
+
+.pause-status-text {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* 状态颜色 */
+.pause-status-text.running {
+    color: var(--success-color);
+}
+
+.pause-status-text.paused {
+    color: var(--warning-color);
+}
+
+.pause-status-text.waiting {
+    color: var(--info-color);
+}
+
+/* 暂停按钮组 */
+.pause-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* 警告按钮样式 */
+.btn-warning {
+    background-color: var(--warning-color);
+    color: white;
+}
+
+.btn-warning:hover {
+    background-color: #d97706;
+}
+
+.btn-warning:active {
+    transform: translateY(1px);
+}
+
+/* 成功按钮样式 */
+.btn-success {
+    background-color: var(--success-color);
+    color: white;
+}
+
+.btn-success:hover {
+    background-color: #059669;
+}
+
+.btn-success:active {
+    transform: translateY(1px);
+}
+
+/* 暂停状态下的脉冲动画 */
+.pause-status.paused .pause-status-icon {
+    animation: pausePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pausePulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+/* 等待状态下的旋转动画 */
+.pause-status.waiting .pause-status-icon {
+    animation: waitingSpin 2s linear infinite;
+}
+
+@keyframes waitingSpin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* 暂停时间显示 */
+.pause-time {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+    padding: 0.125rem 0.5rem;
+    background: rgba(245, 158, 11, 0.1);
+    border-radius: 4px;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .pause-control-bar {
+        flex-direction: column;
+        gap: 0.75rem;
+        align-items: stretch;
+    }
+    
+    .pause-buttons {
+        justify-content: center;
+    }
+    
+    .pause-status {
+        justify-content: center;
+    }
+}
+
+/* ==================== Tooltip 样式 ==================== */
+
+/* 带有 tooltip 的按钮 */
+.has-tooltip {
+    position: relative;
+}
+
+.has-tooltip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-text);
+    font-size: 0.75rem;
+    font-weight: 400;
+    white-space: nowrap;
+    border-radius: var(--radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    z-index: 1000;
+    pointer-events: none;
+}
+
+/* Tooltip 箭头 */
+.has-tooltip::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 2px;
+    border: 6px solid transparent;
+    border-top-color: var(--sidebar-bg);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    z-index: 1001;
+    pointer-events: none;
+}
+
+/* 悬停时显示 */
+.has-tooltip:hover::after,
+.has-tooltip:hover::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* ==================== 转封装进度面板样式 ==================== */
+
+/* 转封装进度面板容器 */
+.remux-progress-panel {
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(59, 130, 246, 0.08));
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.remux-progress-panel h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #8b5cf6;
+    margin: 0 0 0.75rem 0;
+}
+
+/* 转封装进度内容区 */
+.remux-progress-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+/* 当前处理文件名 */
+.remux-current-file {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0.5rem 0.75rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    border-left: 3px solid #8b5cf6;
+}
+
+/* 转封装进度条容器 */
+.remux-progress-bar-container {
+    position: relative;
+    height: 10px;
+    background: #e2e8f0;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+/* 转封装进度条 */
+.remux-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+    border-radius: 5px;
+    transition: width 0.5s ease-out;
+}
+
+/* 进度条动画效果 */
+.remux-progress-panel.active .remux-progress-bar {
+    animation: remuxProgressPulse 2s ease-in-out infinite;
+}
+
+@keyframes remuxProgressPulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.85;
+    }
+}
+
+/* 进度百分比文字 */
+.remux-progress-text {
+    position: absolute;
+    right: 0;
+    top: -22px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #8b5cf6;
+}
+
+/* 转封装信息网格 */
+.remux-info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+}
+
+/* 转封装信息项 */
+.remux-info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--card-bg);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.remux-info-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.remux-info-value {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* 特殊信息项颜色 */
+.remux-info-item:nth-child(1) .remux-info-value {
+    color: var(--info-color);
+}
+
+.remux-info-item:nth-child(2) .remux-info-value {
+    color: var(--success-color);
+}
+
+.remux-info-item:nth-child(3) .remux-info-value {
+    color: #8b5cf6;
+}
+
+.remux-info-item:nth-child(4) .remux-info-value {
+    color: var(--warning-color);
+}
+
+.remux-info-item:nth-child(5) .remux-info-value {
+    color: var(--primary-color);
+}
+
+/* 暂停状态样式 */
+.remux-progress-panel.paused {
+    border-color: rgba(245, 158, 11, 0.3);
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(251, 191, 36, 0.08));
+}
+
+.remux-progress-panel.paused h3 {
+    color: var(--warning-color);
+}
+
+.remux-progress-panel.paused .remux-current-file {
+    border-left-color: var(--warning-color);
+}
+
+.remux-progress-panel.paused .remux-progress-bar {
+    background: linear-gradient(90deg, var(--warning-color), #fbbf24);
+    animation: none;
+}
+
+.remux-progress-panel.paused .remux-progress-text {
+    color: var(--warning-color);
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .remux-info-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .remux-progress-panel {
+        padding: 0.875rem 1rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .remux-info-grid {
+        grid-template-columns: 1fr;
+    }
+}

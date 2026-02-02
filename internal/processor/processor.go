@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -21,6 +22,24 @@ import (
 	"github.com/user/bililive-recorder-autoarchive/internal/scanner"
 	"github.com/user/bililive-recorder-autoarchive/internal/storage"
 )
+
+// RemuxProgress 转封装进度信息
+type RemuxProgress struct {
+	SourceSize         int64         `json:"sourceSize"`         // 源文件总大小（字节）
+	WrittenSize        int64         `json:"writtenSize"`        // 已写入大小（字节）
+	SpeedBytesPerSec   float64       `json:"speedBytesPerSec"`   // 当前速度（字节/秒）
+	Progress           float64       `json:"progress"`           // 进度百分比 (0-100)
+	EstimatedRemaining float64       `json:"estimatedRemaining"` // 预计剩余时间（秒）
+	ElapsedSeconds     float64       `json:"elapsedSeconds"`     // 已用时间（秒）
+	IsActive           bool          `json:"isActive"`           // 是否正在转封装
+	IsPaused           bool          `json:"isPaused"`           // 是否暂停
+	CurrentFile        string        `json:"currentFile"`        // 当前处理的文件名
+	StartTime          time.Time     `json:"-"`                  // 开始时间
+	TotalPausedTime    time.Duration `json:"-"`                  // 累计暂停时长
+}
+
+// 速度滑动窗口大小
+const speedWindowSize = 5
 
 // TaskStatus 任务状态
 type TaskStatus string
@@ -119,6 +138,22 @@ type DefaultProcessor struct {
 	activeTasks   int           // 当前正在处理的任务数
 	taskDone      chan struct{} // 当任务完成时发送信号
 	stopped       bool          // 是否已停止
+
+	// 暂停相关状态
+	pauseMu                sync.RWMutex
+	remuxPaused            bool          // 立即暂停状态
+	remuxPauseAfterCurrent bool          // 当前任务后暂停状态
+	remuxPausedTime        time.Time     // 暂停开始时间
+	remuxTotalPausedTime   time.Duration // 累计暂停时长
+	currentRemuxCmd        *exec.Cmd     // 当前转封装进程引用
+
+	// 转封装进度跟踪
+	remuxProgressMu   sync.RWMutex
+	remuxProgress     RemuxProgress // 当前转封装进度
+	remuxSpeedSamples []float64     // 速度滑动窗口样本
+	remuxLastSize     int64         // 上次检查时的文件大小
+	remuxLastCheck    time.Time     // 上次检查时间
+	remuxStopMonitor  chan struct{} // 停止监控信号
 }
 
 // New 创建新的处理引擎实例
@@ -292,6 +327,39 @@ func (p *DefaultProcessor) worker(id int) {
 	log.Printf("Worker %d 启动", id)
 
 	for {
+		// 检查是否处于"当前任务后暂停"状态
+		p.pauseMu.RLock()
+		shouldWait := p.remuxPauseAfterCurrent && !p.remuxPaused
+		p.pauseMu.RUnlock()
+
+		if shouldWait {
+			// 进入等待状态，不取新任务
+			log.Printf("Worker %d: 等待暂停恢复...", id)
+			for {
+				time.Sleep(500 * time.Millisecond)
+
+				// 检查是否��消或退出
+				select {
+				case <-p.done:
+					log.Printf("Worker %d 停止", id)
+					return
+				case <-p.ctx.Done():
+					log.Printf("Worker %d 收到取消信号", id)
+					return
+				default:
+				}
+
+				// 检查暂停状态是否解除
+				p.pauseMu.RLock()
+				stillWaiting := p.remuxPauseAfterCurrent
+				p.pauseMu.RUnlock()
+
+				if !stillWaiting {
+					break
+				}
+			}
+		}
+
 		select {
 		case <-p.done:
 			log.Printf("Worker %d 停止", id)
@@ -569,8 +637,10 @@ func (p *DefaultProcessor) runFullScan() error {
 }
 
 // scheduledScan 定时扫描任务
+// 支持 ScanInterval 热重载：每次触发时检查间隔是否变化，如变化则重建 ticker
 func (p *DefaultProcessor) scheduledScan() {
-	ticker := time.NewTicker(p.config.ScanInterval)
+	currentInterval := p.config.ScanInterval
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -580,6 +650,18 @@ func (p *DefaultProcessor) scheduledScan() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
+			// 检查扫描间隔是否变化（热重载支持）
+			p.mu.RLock()
+			newInterval := p.config.ScanInterval
+			p.mu.RUnlock()
+
+			if newInterval != currentInterval && newInterval > 0 {
+				log.Printf("扫描间隔��变更: %v -> %v", currentInterval, newInterval)
+				ticker.Stop()
+				currentInterval = newInterval
+				ticker = time.NewTicker(currentInterval)
+			}
+
 			log.Println("执行定时全量扫描...")
 			if err := p.runFullScan(); err != nil {
 				log.Printf("定时扫描失败: %v", err)
@@ -704,8 +786,12 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// 步骤 8: 执行转封装
+	// 步骤 8: 执行转封装（带进度监控）
 	if p.config.FFmpeg != nil {
+		// 启动进度监控
+		p.startRemuxProgressMonitor(fileInfo.Size(), finalOutputPath, group.FLVPath)
+		defer p.stopRemuxProgressMonitor()
+
 		opts := &ffmpeg.RemuxOptions{
 			CoverPath: group.CoverPath,
 		}
@@ -1213,4 +1299,415 @@ type ProcessorError struct {
 
 func (e *ProcessorError) Error() string {
 	return e.Message
+}
+
+// ================== 转封装暂停功能 ==================
+
+// RemuxPauseStatus 转封装暂停状态
+type RemuxPauseStatus struct {
+	Paused            bool   `json:"paused"`            // 是否立即暂停
+	PauseAfterCurrent bool   `json:"pauseAfterCurrent"` // 是否当前任务后暂停
+	PausedTimeStr     string `json:"pausedTimeStr"`     // 暂停时长字符串
+}
+
+// PauseRemux 立即暂停当前转封装进程
+func (p *DefaultProcessor) PauseRemux() error {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+
+	if p.remuxPaused {
+		return nil // 已经暂停
+	}
+
+	p.remuxPaused = true
+	p.remuxPausedTime = time.Now()
+
+	// 暂停当前正在运行的 FFmpeg 进程
+	if p.currentRemuxCmd != nil && p.currentRemuxCmd.Process != nil {
+		if err := ffmpeg.SuspendProcess(p.currentRemuxCmd); err != nil {
+			log.Printf("[processor] 暂停 FFmpeg 进程失败: %v", err)
+			return fmt.Errorf("暂停进程失败: %w", err)
+		}
+		log.Println("[processor] 转封装已暂停")
+	}
+
+	return nil
+}
+
+// ResumeRemux 恢复转封装进程
+func (p *DefaultProcessor) ResumeRemux() error {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+
+	if !p.remuxPaused {
+		return nil // 未暂停
+	}
+
+	// 恢复当前正在运行的 FFmpeg 进程
+	if p.currentRemuxCmd != nil && p.currentRemuxCmd.Process != nil {
+		if err := ffmpeg.ResumeProcess(p.currentRemuxCmd); err != nil {
+			log.Printf("[processor] 恢复 FFmpeg 进程失败: %v", err)
+			return fmt.Errorf("恢复进程失败: %w", err)
+		}
+	}
+
+	// 累加暂停时长
+	p.remuxTotalPausedTime += time.Since(p.remuxPausedTime)
+	p.remuxPaused = false
+	p.remuxPausedTime = time.Time{}
+
+	log.Println("[processor] 转封装已恢复")
+	return nil
+}
+
+// PauseRemuxAfterCurrent 设置当前任务后暂停标志
+func (p *DefaultProcessor) PauseRemuxAfterCurrent() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+
+	p.remuxPauseAfterCurrent = true
+	log.Println("[processor] 已设置：当前任务完成后暂停转封装")
+}
+
+// CancelPauseRemuxAfterCurrent 取消当前任务后暂停
+func (p *DefaultProcessor) CancelPauseRemuxAfterCurrent() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+
+	p.remuxPauseAfterCurrent = false
+	log.Println("[processor] 已取消：当前任务后暂停转封装")
+}
+
+// GetRemuxPauseStatus 获取转封装暂停状态
+func (p *DefaultProcessor) GetRemuxPauseStatus() RemuxPauseStatus {
+	p.pauseMu.RLock()
+	defer p.pauseMu.RUnlock()
+
+	status := RemuxPauseStatus{
+		Paused:            p.remuxPaused,
+		PauseAfterCurrent: p.remuxPauseAfterCurrent,
+	}
+
+	if p.remuxPaused && !p.remuxPausedTime.IsZero() {
+		duration := time.Since(p.remuxPausedTime)
+		status.PausedTimeStr = formatPauseDuration(duration)
+	}
+
+	return status
+}
+
+// IsRemuxPaused 检查转封装是否暂停（包括立即暂停和等待当前任务后暂停）
+func (p *DefaultProcessor) IsRemuxPaused() bool {
+	p.pauseMu.RLock()
+	defer p.pauseMu.RUnlock()
+	return p.remuxPaused
+}
+
+// ShouldPauseAfterCurrentRemux 检查是否需要在当前任务后暂停
+func (p *DefaultProcessor) ShouldPauseAfterCurrentRemux() bool {
+	p.pauseMu.RLock()
+	defer p.pauseMu.RUnlock()
+	return p.remuxPauseAfterCurrent
+}
+
+// SetCurrentRemuxCmd 设置当前转封装命令引用（供 FFmpeg 包调用）
+func (p *DefaultProcessor) SetCurrentRemuxCmd(cmd *exec.Cmd) {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+	p.currentRemuxCmd = cmd
+}
+
+// ClearCurrentRemuxCmd 清除当��转封装命令引用
+func (p *DefaultProcessor) ClearCurrentRemuxCmd() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+	p.currentRemuxCmd = nil
+}
+
+// GetRemuxTotalPausedTime 获取累计暂停时长
+func (p *DefaultProcessor) GetRemuxTotalPausedTime() time.Duration {
+	p.pauseMu.RLock()
+	defer p.pauseMu.RUnlock()
+	return p.remuxTotalPausedTime
+}
+
+// ResetRemuxPausedTime 重置暂停时长（任务开始时调用）
+func (p *DefaultProcessor) ResetRemuxPausedTime() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+	p.remuxTotalPausedTime = 0
+}
+
+// formatPauseDuration 格式化暂停时长
+func formatPauseDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d秒", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d分%d秒", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%d小时%d分", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// ================== 转封装进度监控 ==================
+
+// GetRemuxProgress 获取当前转封装进度
+func (p *DefaultProcessor) GetRemuxProgress() RemuxProgress {
+	p.remuxProgressMu.RLock()
+	defer p.remuxProgressMu.RUnlock()
+
+	progress := p.remuxProgress
+
+	// 检查暂停状态
+	p.pauseMu.RLock()
+	progress.IsPaused = p.remuxPaused
+	p.pauseMu.RUnlock()
+
+	// 如果正在进行，更新已用时间
+	if progress.IsActive && !progress.StartTime.IsZero() {
+		totalPausedTime := p.remuxProgress.TotalPausedTime
+		if progress.IsPaused && !p.remuxPausedTime.IsZero() {
+			totalPausedTime += time.Since(p.remuxPausedTime)
+		}
+		progress.ElapsedSeconds = time.Since(progress.StartTime).Seconds() - totalPausedTime.Seconds()
+		if progress.ElapsedSeconds < 0 {
+			progress.ElapsedSeconds = 0
+		}
+	}
+
+	return progress
+}
+
+// startRemuxProgressMonitor 启动转封装进度监控
+// 在转封装开始时调用，传入源文件大小和输出文件路径
+func (p *DefaultProcessor) startRemuxProgressMonitor(sourceSize int64, outputPath string, inputPath string) {
+	p.remuxProgressMu.Lock()
+	// 初始化进度信息
+	p.remuxProgress = RemuxProgress{
+		SourceSize:         sourceSize,
+		WrittenSize:        0,
+		SpeedBytesPerSec:   0,
+		Progress:           0,
+		EstimatedRemaining: 0,
+		ElapsedSeconds:     0,
+		IsActive:           true,
+		IsPaused:           false,
+		CurrentFile:        filepath.Base(inputPath),
+		StartTime:          time.Now(),
+		TotalPausedTime:    0,
+	}
+	p.remuxSpeedSamples = make([]float64, 0, speedWindowSize)
+	p.remuxLastSize = 0
+	p.remuxLastCheck = time.Now()
+	p.remuxStopMonitor = make(chan struct{})
+	p.remuxProgressMu.Unlock()
+
+	// 启动监控协程
+	go p.monitorRemuxProgress(outputPath)
+}
+
+// stopRemuxProgressMonitor 停止转封装进度监控
+func (p *DefaultProcessor) stopRemuxProgressMonitor() {
+	p.remuxProgressMu.Lock()
+	defer p.remuxProgressMu.Unlock()
+
+	// 发送停止信号
+	if p.remuxStopMonitor != nil {
+		close(p.remuxStopMonitor)
+		p.remuxStopMonitor = nil
+	}
+
+	// 标记为非活动状态
+	p.remuxProgress.IsActive = false
+	p.remuxProgress.Progress = 100
+}
+
+// monitorRemuxProgress 监控转封装进度的协程
+func (p *DefaultProcessor) monitorRemuxProgress(outputPath string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.remuxStopMonitor:
+			return
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.updateRemuxProgress(outputPath)
+		}
+	}
+}
+
+// updateRemuxProgress 更新转封装进度
+func (p *DefaultProcessor) updateRemuxProgress(outputPath string) {
+	// 检查暂停状态
+	p.pauseMu.RLock()
+	isPaused := p.remuxPaused
+	p.pauseMu.RUnlock()
+
+	// 获取输出文件大小
+	fileInfo, err := os.Stat(outputPath)
+	if err != nil {
+		// 文件可能还不存在
+		return
+	}
+
+	currentSize := fileInfo.Size()
+	now := time.Now()
+
+	p.remuxProgressMu.Lock()
+	defer p.remuxProgressMu.Unlock()
+
+	// 如果��于暂停状态，更新暂停时间但不更新速度
+	if isPaused {
+		p.remuxProgress.IsPaused = true
+		return
+	}
+
+	// 计算时间间隔
+	elapsed := now.Sub(p.remuxLastCheck).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+
+	// 计算当前速度
+	sizeChange := currentSize - p.remuxLastSize
+	if sizeChange < 0 {
+		sizeChange = 0
+	}
+	currentSpeed := float64(sizeChange) / elapsed
+
+	// 更新滑动窗口
+	if len(p.remuxSpeedSamples) >= speedWindowSize {
+		p.remuxSpeedSamples = p.remuxSpeedSamples[1:]
+	}
+	p.remuxSpeedSamples = append(p.remuxSpeedSamples, currentSpeed)
+
+	// 计算平均速度
+	var avgSpeed float64
+	if len(p.remuxSpeedSamples) > 0 {
+		var sum float64
+		for _, s := range p.remuxSpeedSamples {
+			sum += s
+		}
+		avgSpeed = sum / float64(len(p.remuxSpeedSamples))
+	}
+
+	// 更新进度信息
+	p.remuxProgress.WrittenSize = currentSize
+	p.remuxProgress.SpeedBytesPerSec = avgSpeed
+	p.remuxProgress.IsPaused = false
+
+	// 计算进度百分比
+	if p.remuxProgress.SourceSize > 0 {
+		p.remuxProgress.Progress = float64(currentSize) / float64(p.remuxProgress.SourceSize) * 100
+		if p.remuxProgress.Progress > 100 {
+			p.remuxProgress.Progress = 100
+		}
+	}
+
+	// 计算剩余时间
+	remaining := p.remuxProgress.SourceSize - currentSize
+	if remaining > 0 && avgSpeed > 0 {
+		p.remuxProgress.EstimatedRemaining = float64(remaining) / avgSpeed
+	} else {
+		p.remuxProgress.EstimatedRemaining = 0
+	}
+
+	// 更新已用时间
+	totalElapsed := time.Since(p.remuxProgress.StartTime)
+	p.remuxProgress.ElapsedSeconds = totalElapsed.Seconds() - p.remuxProgress.TotalPausedTime.Seconds()
+	if p.remuxProgress.ElapsedSeconds < 0 {
+		p.remuxProgress.ElapsedSeconds = 0
+	}
+
+	// 更新上次检查信息
+	p.remuxLastSize = currentSize
+	p.remuxLastCheck = now
+}
+
+// FormatRemuxProgressInfo 格式化转封装进度信息（用于前端显示）
+type RemuxProgressInfo struct {
+	SourceSizeStr  string  `json:"sourceSizeStr"`  // 源文件大小字符串
+	WrittenSizeStr string  `json:"writtenSizeStr"` // 已写入大小字符串
+	SpeedStr       string  `json:"speedStr"`       // 速度字符串
+	ElapsedStr     string  `json:"elapsedStr"`     // 已用时间字符串
+	Progress       float64 `json:"progress"`       // 进度百分比
+	IsActive       bool    `json:"isActive"`       // 是否活动
+	IsPaused       bool    `json:"isPaused"`       // 是否暂停
+	CurrentFile    string  `json:"currentFile"`    // 当前文件名
+}
+
+// GetRemuxProgressInfo 获取格式化的转封装进度信息
+func (p *DefaultProcessor) GetRemuxProgressInfo() RemuxProgressInfo {
+	progress := p.GetRemuxProgress()
+
+	info := RemuxProgressInfo{
+		SourceSizeStr:  formatBytes(progress.SourceSize),
+		WrittenSizeStr: formatBytes(progress.WrittenSize),
+		SpeedStr:       formatSpeed(progress.SpeedBytesPerSec),
+		Progress:       progress.Progress,
+		IsActive:       progress.IsActive,
+		IsPaused:       progress.IsPaused,
+		CurrentFile:    progress.CurrentFile,
+		ElapsedStr:     formatDurationSeconds(progress.ElapsedSeconds),
+	}
+
+	return info
+}
+
+// formatBytes 格式化字节为人类可读字符串
+func formatBytes(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// formatSpeed 格式化速度为人类可读字符串
+func formatSpeed(bytesPerSec float64) string {
+	const (
+		KB = 1024.0
+		MB = KB * 1024.0
+	)
+
+	switch {
+	case bytesPerSec >= MB:
+		return fmt.Sprintf("%.1f MB/s", bytesPerSec/MB)
+	case bytesPerSec >= KB:
+		return fmt.Sprintf("%.1f KB/s", bytesPerSec/KB)
+	default:
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
+}
+
+// formatDurationSeconds 格式化秒数为人类可读时间字符串
+func formatDurationSeconds(seconds float64) string {
+	if seconds <= 0 {
+		return "--"
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%.0f秒", seconds)
+	}
+	if seconds < 3600 {
+		minutes := int(seconds) / 60
+		secs := int(seconds) % 60
+		return fmt.Sprintf("%d分%d秒", minutes, secs)
+	}
+	hours := int(seconds) / 3600
+	minutes := (int(seconds) % 3600) / 60
+	return fmt.Sprintf("%d小时%d分", hours, minutes)
 }

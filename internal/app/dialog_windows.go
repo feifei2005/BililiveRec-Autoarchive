@@ -84,3 +84,28 @@ func selectFolderDialog() string {
 	result := syscall.UTF16ToString(path)
 	return result
 }
+
+// openFileInExplorer 在 Windows 资源管理器中打开并选中指定文件
+func openFileInExplorer(filePath string) error {
+	// 使用 explorer /select,"路径" 命令在资源管理器中定位文件
+	cmd := syscall.NewLazyDLL("shell32.dll").NewProc("ShellExecuteW")
+
+	verb, _ := syscall.UTF16PtrFromString("open")
+	file, _ := syscall.UTF16PtrFromString("explorer")
+	params, _ := syscall.UTF16PtrFromString("/select,\"" + filePath + "\"")
+
+	ret, _, err := cmd.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(file)),
+		uintptr(unsafe.Pointer(params)),
+		0,
+		1, // SW_SHOWNORMAL
+	)
+
+	// ShellExecuteW 返回值大于 32 表示成功
+	if ret <= 32 {
+		return err
+	}
+	return nil
+}

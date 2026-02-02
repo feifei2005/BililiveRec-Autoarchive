@@ -110,6 +110,7 @@ type ConfigData struct {
 	ScanIntervalMin    int      `json:"scanIntervalMin"`    // 定时扫描间隔（分钟）
 	ServerPort         int      `json:"serverPort"`
 	WebhookPath        string   `json:"webhookPath"`
+	WebhookEnabled     bool     `json:"webhookEnabled"` // 是否启用 Webhook 自动添加任务
 	FFmpegPath         string   `json:"ffmpegPath"`
 	FFprobePath        string   `json:"ffprobePath"`
 	CustomArgs         []string `json:"customArgs"`
@@ -138,6 +139,7 @@ func (a *App) GetConfig() ConfigData {
 		ScanIntervalMin:    a.config.Processing.ScanIntervalMin,
 		ServerPort:         a.config.Server.Port,
 		WebhookPath:        a.config.Server.WebhookPath,
+		WebhookEnabled:     a.config.Server.WebhookEnabled,
 		FFmpegPath:         a.config.FFmpeg.Path,
 		FFprobePath:        a.config.FFmpeg.FFprobePath,
 		CustomArgs:         a.config.FFmpeg.CustomArgs,
@@ -167,6 +169,7 @@ func (a *App) SaveConfig(data ConfigData) error {
 	a.config.Processing.ScanIntervalMin = data.ScanIntervalMin
 	a.config.Server.Port = data.ServerPort
 	a.config.Server.WebhookPath = data.WebhookPath
+	a.config.Server.WebhookEnabled = data.WebhookEnabled
 	a.config.FFmpeg.Path = data.FFmpegPath
 	a.config.FFmpeg.FFprobePath = data.FFprobePath
 	a.config.FFmpeg.CustomArgs = data.CustomArgs
@@ -600,6 +603,7 @@ type TranscodeTaskInfo struct {
 	Status              string  `json:"status"`
 	Progress            float64 `json:"progress"`
 	Error               string  `json:"error"`
+	ErrorLogPath        string  `json:"errorLogPath"`        // 错误日志文件路径
 	ETAString           string  `json:"etaString"`           // 剩余时间字符串
 	ETASeconds          float64 `json:"etaSeconds"`          // 剩余秒数
 	Speed               string  `json:"speed"`               // 速度倍率
@@ -744,6 +748,7 @@ func (a *App) GetTranscodeTasks() []TranscodeTaskInfo {
 			Status:              string(task.Status),
 			Progress:            task.Progress,
 			Error:               task.Error,
+			ErrorLogPath:        task.ErrorLogPath,
 			ETAString:           task.ETAString,
 			ETASeconds:          task.ETASeconds,
 			Speed:               task.Speed,
@@ -808,4 +813,190 @@ func (a *App) ClearCompletedTranscodeTasks() error {
 	}
 	a.transcoder.ClearCompleted()
 	return nil
+}
+
+// ================== 暂停相关 API ==================
+
+// PauseStatus 暂停状态
+type PauseStatus struct {
+	// 转封装暂停状态
+	RemuxPaused            bool   `json:"remuxPaused"`            // 转封装是否立即暂停
+	RemuxPauseAfterCurrent bool   `json:"remuxPauseAfterCurrent"` // 转封装是否当前任务后暂停
+	RemuxPausedTimeStr     string `json:"remuxPausedTimeStr"`     // 转封装暂停时长
+
+	// 转码暂停状态
+	TranscodePaused            bool   `json:"transcodePaused"`            // 转码是否立即暂停
+	TranscodePauseAfterCurrent bool   `json:"transcodePauseAfterCurrent"` // 转码是否当前任务后暂停
+	TranscodePausedTimeStr     string `json:"transcodePausedTimeStr"`     // 转码暂停时长
+}
+
+// GetPauseStatus 获取所有暂停状态
+func (a *App) GetPauseStatus() PauseStatus {
+	status := PauseStatus{}
+
+	// 获取转封装暂停状态
+	if a.processor != nil {
+		remuxStatus := a.processor.GetRemuxPauseStatus()
+		status.RemuxPaused = remuxStatus.Paused
+		status.RemuxPauseAfterCurrent = remuxStatus.PauseAfterCurrent
+		status.RemuxPausedTimeStr = remuxStatus.PausedTimeStr
+	}
+
+	// 获取转码暂停状态
+	if a.transcoder != nil {
+		transcodeStatus := a.transcoder.GetTranscodePauseStatus()
+		status.TranscodePaused = transcodeStatus.Paused
+		status.TranscodePauseAfterCurrent = transcodeStatus.PauseAfterCurrent
+		status.TranscodePausedTimeStr = transcodeStatus.PausedTimeStr
+	}
+
+	return status
+}
+
+// ================== 转封装暂停 API ==================
+
+// PauseRemux 立即暂停转封装
+func (a *App) PauseRemux() error {
+	if a.processor == nil {
+		return fmt.Errorf("处理器未初始化")
+	}
+	return a.processor.PauseRemux()
+}
+
+// ResumeRemux 恢复转封装
+func (a *App) ResumeRemux() error {
+	if a.processor == nil {
+		return fmt.Errorf("处理器未初始化")
+	}
+	return a.processor.ResumeRemux()
+}
+
+// PauseRemuxAfterCurrent 当前任务后暂停转封装
+func (a *App) PauseRemuxAfterCurrent() {
+	if a.processor != nil {
+		a.processor.PauseRemuxAfterCurrent()
+	}
+}
+
+// CancelPauseRemuxAfterCurrent 取消当前任务后暂停转封装
+func (a *App) CancelPauseRemuxAfterCurrent() {
+	if a.processor != nil {
+		a.processor.CancelPauseRemuxAfterCurrent()
+	}
+}
+
+// GetRemuxPauseStatus 获取转封装暂停状态
+func (a *App) GetRemuxPauseStatus() processor.RemuxPauseStatus {
+	if a.processor == nil {
+		return processor.RemuxPauseStatus{}
+	}
+	return a.processor.GetRemuxPauseStatus()
+}
+
+// ================== 转码暂停 API ==================
+
+// PauseTranscode 立即暂停转码
+func (a *App) PauseTranscode() error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	return a.transcoder.PauseTranscode()
+}
+
+// ResumeTranscode 恢复转码
+func (a *App) ResumeTranscode() error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	return a.transcoder.ResumeTranscode()
+}
+
+// PauseTranscodeAfterCurrent 当前任务后暂停转码
+func (a *App) PauseTranscodeAfterCurrent() {
+	if a.transcoder != nil {
+		a.transcoder.PauseTranscodeAfterCurrent()
+	}
+}
+
+// CancelPauseTranscodeAfterCurrent 取消当前任务后暂停转码
+func (a *App) CancelPauseTranscodeAfterCurrent() {
+	if a.transcoder != nil {
+		a.transcoder.CancelPauseTranscodeAfterCurrent()
+	}
+}
+
+// GetTranscodePauseStatus 获取转码暂停状态
+func (a *App) GetTranscodePauseStatus() transcoder.TranscodePauseStatus {
+	if a.transcoder == nil {
+		return transcoder.TranscodePauseStatus{}
+	}
+	return a.transcoder.GetTranscodePauseStatus()
+}
+
+// ================== 转封装进度 API ==================
+
+// RemuxProgressInfo 转封装进度信息（用于前端）
+type RemuxProgressInfo struct {
+	SourceSize       int64   `json:"sourceSize"`       // 源文件大小（字节）
+	WrittenSize      int64   `json:"writtenSize"`      // 已写入大小（字节）
+	SourceSizeStr    string  `json:"sourceSizeStr"`    // 源文件大小字符串
+	WrittenSizeStr   string  `json:"writtenSizeStr"`   // 已写入大小字符串
+	SpeedBytesPerSec float64 `json:"speedBytesPerSec"` // 速度（字节/秒）
+	SpeedStr         string  `json:"speedStr"`         // 速度字符串
+	Progress         float64 `json:"progress"`         // 进度百分比
+	ElapsedSeconds   float64 `json:"elapsedSeconds"`   // 已用时间秒数
+	ElapsedStr       string  `json:"elapsedStr"`       // 已用时间字符串
+	IsActive         bool    `json:"isActive"`         // 是否正在进行
+	IsPaused         bool    `json:"isPaused"`         // 是否暂停
+	CurrentFile      string  `json:"currentFile"`      // 当前文件名
+}
+
+// GetRemuxProgress 获取转封装进度
+func (a *App) GetRemuxProgress() RemuxProgressInfo {
+	if a.processor == nil {
+		return RemuxProgressInfo{}
+	}
+
+	// 获取原始进度
+	progress := a.processor.GetRemuxProgress()
+	// 获取格式化的进度信息
+	formatted := a.processor.GetRemuxProgressInfo()
+
+	return RemuxProgressInfo{
+		SourceSize:       progress.SourceSize,
+		WrittenSize:      progress.WrittenSize,
+		SourceSizeStr:    formatted.SourceSizeStr,
+		WrittenSizeStr:   formatted.WrittenSizeStr,
+		SpeedBytesPerSec: progress.SpeedBytesPerSec,
+		SpeedStr:         formatted.SpeedStr,
+		Progress:         progress.Progress,
+		ElapsedSeconds:   progress.ElapsedSeconds,
+		ElapsedStr:       formatted.ElapsedStr,
+		IsActive:         progress.IsActive,
+		IsPaused:         progress.IsPaused,
+		CurrentFile:      progress.CurrentFile,
+	}
+}
+
+// ================== 转码错误日志 API ==================
+
+// OpenTranscodeErrorLog 打开转码任务的错误日志文件（在资源管理器中定位）
+func (a *App) OpenTranscodeErrorLog(taskID string) error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+
+	// 获取任务
+	task, err := a.transcoder.GetTask(taskID)
+	if err != nil {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+
+	// 检查错误日志路径
+	if task.ErrorLogPath == "" {
+		return fmt.Errorf("该任务没有错误日志文件")
+	}
+
+	// 调用平台特定的打开文件函数
+	return openFileInExplorer(task.ErrorLogPath)
 }

@@ -19,8 +19,9 @@ type Config struct {
 
 // ServerConfig Webhook 服务器配置
 type ServerConfig struct {
-	Port        int    `yaml:"port"`
-	WebhookPath string `yaml:"webhook_path"`
+	Port           int    `yaml:"port"`
+	WebhookPath    string `yaml:"webhook_path"`
+	WebhookEnabled bool   `yaml:"webhook_enabled"` // 是否启用 Webhook 自动添加任务
 }
 
 // ProcessingConfig 录制处理配置
@@ -96,8 +97,9 @@ func Load(path string) (*Config, error) {
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Port:        8080,
-			WebhookPath: "/webhook",
+			Port:           8080,
+			WebhookPath:    "/webhook",
+			WebhookEnabled: true, // 默认启用 Webhook
 		},
 		Processing: ProcessingConfig{
 			InputDir:           "",
