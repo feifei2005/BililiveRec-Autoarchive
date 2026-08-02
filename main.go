@@ -238,6 +238,8 @@ func (a *Application) Initialize() error {
 	// 6. 初始化 Webhook 服务器
 	log.Println("初始化 Webhook 服务器...")
 	a.webhook = webhook.New(webhook.Config{
+		BindAddress: a.config.Server.BindAddress,
+		APIToken:    a.config.Server.APIToken,
 		Port:        a.config.Server.Port,
 		WebhookPath: a.config.Server.WebhookPath,
 		InputDir:    a.config.Processing.InputDir,
@@ -253,7 +255,10 @@ func (a *Application) Initialize() error {
 		}
 
 		// 获取完整文件路径
-		fullPath := a.webhook.GetFullPath(event.EventData.RelativePath)
+		fullPath, pathErr := a.webhook.GetFullPath(event.EventData.RelativePath)
+		if pathErr != nil {
+			return pathErr
+		}
 		log.Printf("Webhook: 收到文件关闭事件，文件: %s", fullPath)
 
 		// 添加到处理队列
@@ -269,12 +274,18 @@ func (a *Application) Initialize() error {
 
 	// 8. 初始化转码器
 	log.Println("初始化转码器...")
+	maxWorkers := a.config.Transcode.MaxConcurrent
+	if maxWorkers <= 0 {
+		maxWorkers = 1
+	}
 	a.transcoder = transcoder.New(transcoder.Config{
 		FFmpegPath:  a.config.FFmpeg.Path,
 		FFprobePath: a.config.FFmpeg.FFprobePath,
-		MaxWorkers:  1, // 默认单线程转码
+		MaxWorkers:  maxWorkers,
 	})
-	log.Println("转码器已创建")
+	// 应用 QSV 滤镜链重初始化失败回退策略
+	a.transcoder.SetQSVReinitStrategy(transcoder.QSVReinitStrategy(a.config.Transcode.QSVReinitStrategy))
+	log.Printf("转码器已创建，并发路数: %d, QSV 回退策略: %s", maxWorkers, a.config.Transcode.QSVReinitStrategy)
 
 	// 9. 初始化 Wails 应用绑定
 	log.Println("初始化应用绑定...")
@@ -289,6 +300,27 @@ func (a *Application) Initialize() error {
 	// 设置转码器
 	a.app.SetTranscoder(a.transcoder)
 	log.Println("转码器已设置到 App")
+
+	// 设置转码器处理日志回调（将转码结果持久化到 process_logs 表，
+	// 使错误日志页面能显示转码失败记录）
+	a.transcoder.SetProcessLogCallback(func(entry transcoder.ProcessLogEntry) {
+		if a.storage == nil {
+			return
+		}
+		err := a.storage.LogProcessResult(storage.ProcessLog{
+			TaskID:     entry.TaskID,
+			InputPath:  entry.InputPath,
+			OutputPath: entry.OutputPath,
+			Status:     entry.Status,
+			Error:      entry.Error,
+			StartTime:  entry.StartTime,
+			EndTime:    entry.EndTime,
+		})
+		if err != nil {
+			log.Printf("[main] 写入转码处理日志失败: %v", err)
+		}
+	})
+	log.Println("转码器处理日志回调已设置")
 
 	// 设置 Webhook 服务器的 App 引用（用于转码 API）
 	a.webhook.SetApp(a.app)

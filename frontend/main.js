@@ -629,20 +629,20 @@ async function loadLogsPage() {
 
 function renderLogs(logs) {
     const container = document.getElementById('error-log-list');
-    
-    if (logs.length === 0) {
+
+    if (!logs || logs.length === 0) {
         container.innerHTML = '<div class="empty-state">暂无错误日志</div>';
         return;
     }
-    
+
     const html = logs.map(log => `
         <div class="log-item">
             <div class="log-time">${formatTime(log.timestamp)}</div>
-            <div class="log-file">${formatPath(log.filePath)}</div>
-            <div class="log-error">${log.error}</div>
+            <div class="log-file">${escapeHtml(log.filePath)}</div>
+            <div class="log-error">${escapeHtml(log.error)}</div>
         </div>
     `).join('');
-    
+
     container.innerHTML = html;
 }
 
@@ -666,17 +666,19 @@ const transcodeState = {
 
 // FFmpeg 预设参数
 const ffmpegPresets = {
-    'h264-high': '-c:v libx264 -preset slow -crf 18 -c:a aac -b:a 256k',
-    'h264-medium': '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k',
-    'h265-medium': '-c:v libx265 -preset medium -crf 28 -c:a aac -b:a 192k',
-    'av1-medium': '-c:v libsvtav1 -preset 6 -crf 30 -c:a libopus -b:a 128k'
+    'h264-high': '-c:v h264_qsv -global_quality 18 -c:a aac -b:a 256k',
+    'h264-medium': '-c:v h264_qsv -global_quality 23 -c:a aac -b:a 192k',
+    'h265-medium': '-c:v hevc_qsv -global_quality 25 -c:a aac -b:a 192k',
+    'av1-medium': '-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k'
 };
 
 // 默认 FFmpeg 参数
-const DEFAULT_FFMPEG_PARAMS = '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k';
+const DEFAULT_FFMPEG_PARAMS = '-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k';
 
 // 转码设置缓存
 let cachedTranscodeSettings = null;
+
+// ==================== 转码设置管理 ====================
 
 // 从后端加载转码设置
 async function loadTranscodeSettings() {
@@ -691,7 +693,8 @@ async function loadTranscodeSettings() {
             format: 'mp4',
             preserveCover: true,
             deleteSourceOnSuccess: false,
-            maxFps: 0
+            maxFps: 0,
+            qsvReinitStrategy: 'nv12'
         };
     }
 }
@@ -713,6 +716,12 @@ async function loadTranscodePage() {
     const paramsInput = document.getElementById('ffmpeg-params');
     if (paramsInput && !paramsInput.value) {
         paramsInput.value = settings.params || DEFAULT_FFMPEG_PARAMS;
+    }
+
+    // 恢复 FFmpeg 输入选项（放在 -i 之前）
+    const inputArgsInput = document.getElementById('ffmpeg-input-args');
+    if (inputArgsInput) {
+        inputArgsInput.value = settings.inputArgs || '';
     }
     
     // 恢复帧率上限
@@ -738,7 +747,24 @@ async function loadTranscodePage() {
     if (deleteSourceCheckbox) {
         deleteSourceCheckbox.checked = settings.deleteSourceOnSuccess === true; // 默认为 false
     }
-    
+
+    // 恢复 QSV 回退策略
+    const qsvStrategySelect = document.getElementById('qsv-reinit-strategy');
+    if (qsvStrategySelect) {
+        qsvStrategySelect.value = settings.qsvReinitStrategy === 'error' ? 'error' : 'nv12';
+    }
+
+    // 恢复并发转码路数
+    try {
+        const maxWorkers = await window.go.app.App.GetTranscodeMaxWorkers();
+        const maxWorkersInput = document.getElementById('transcode-max-workers');
+        if (maxWorkersInput) {
+            maxWorkersInput.value = Math.max(1, maxWorkers || 1);
+        }
+    } catch (error) {
+        console.error('加载并发转码路数失败:', error);
+    }
+
     // 加载转码任务列表
     await loadTranscodeTasks();
 }
@@ -827,9 +853,10 @@ async function startTranscode() {
     
     const params = document.getElementById('ffmpeg-params').value.trim();
     const format = document.getElementById('output-format').value;
+    const inputArgs = document.getElementById('ffmpeg-input-args').value.trim();
     const preserveCover = document.getElementById('preserve-cover').checked;
     const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
-    
+
     // 解析帧率上限
     const maxFpsInput = document.getElementById('max-fps').value.trim();
     let maxFps = 0; // 0 表示不限制
@@ -839,18 +866,21 @@ async function startTranscode() {
             maxFps = parsed;
         }
     }
-    
+
     // 注意：设置会在后端 StartTranscode 中自动保存
-    
+
     try {
         showToast('正在添加转码任务...', 'info');
+        const qsvStrategy = document.getElementById('qsv-reinit-strategy')?.value || 'nv12';
         const result = await window.go.app.App.StartTranscode({
             files: selectedFiles,
             params: params,
             format: format,
+            inputArgs: inputArgs,
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
-            maxFps: maxFps
+            maxFps: maxFps,
+            qsvReinitStrategy: qsvStrategy
         });
         
         if (result.success) {
@@ -1198,9 +1228,10 @@ async function clearCompletedTasks() {
 async function saveTranscodeSettings() {
     const params = document.getElementById('ffmpeg-params').value.trim();
     const format = document.getElementById('output-format').value;
+    const inputArgs = document.getElementById('ffmpeg-input-args').value.trim();
     const preserveCover = document.getElementById('preserve-cover').checked;
     const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
-    
+
     // 解析帧率上限
     const maxFpsInput = document.getElementById('max-fps').value.trim();
     let maxFps = 0; // 0 表示不限制
@@ -1210,25 +1241,45 @@ async function saveTranscodeSettings() {
             maxFps = parsed;
         }
     }
-    
+
+    // 解析并发转码路数
+    const maxWorkersInput = document.getElementById('transcode-max-workers');
+    let maxWorkers = 1;
+    if (maxWorkersInput) {
+        const parsed = parseInt(maxWorkersInput.value, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+            maxWorkers = Math.min(Math.max(parsed, 1), 32);
+        }
+    }
+
     try {
+        // 读取 QSV 回退策略
+        const qsvStrategy = document.getElementById('qsv-reinit-strategy')?.value || 'nv12';
+
         await window.go.app.App.SaveTranscodeSettings({
             params: params,
             format: format,
+            inputArgs: inputArgs,
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
-            maxFps: maxFps
+            maxFps: maxFps,
+            qsvReinitStrategy: qsvStrategy
         });
-        
-        // 更新缓存
+
+        // 热更新并发路数（不依赖页面重启）
+        await window.go.app.App.SetTranscodeMaxWorkers(maxWorkers);
+
+        // 更新缓存与状态
         cachedTranscodeSettings = {
             params: params,
             format: format,
+            inputArgs: inputArgs,
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
-            maxFps: maxFps
+            maxFps: maxFps,
+            qsvReinitStrategy: qsvStrategy
         };
-        
+
         showToast('转码设置已保存', 'success');
     } catch (error) {
         console.error('保存转码设置失败:', error);
@@ -1252,14 +1303,14 @@ function initTranscodeEvents() {
     document.getElementById('btn-save-transcode-settings')?.addEventListener('click', saveTranscodeSettings);
     document.getElementById('btn-start-transcode')?.addEventListener('click', startTranscode);
     document.getElementById('btn-cancel-transcode')?.addEventListener('click', cancelTranscode);
-    
+
     // 任务列表操作
     document.getElementById('btn-refresh-tasks')?.addEventListener('click', refreshTranscodeTasks);
     document.getElementById('btn-clear-completed')?.addEventListener('click', clearCompletedTasks);
-    
+
     // 全选复选框
     document.getElementById('select-all-videos')?.addEventListener('change', toggleSelectAllVideos);
-    
+
     initPresetButtons();
     
     // 初始化拖拽区域

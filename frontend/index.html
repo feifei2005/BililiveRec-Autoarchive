@@ -38,6 +38,7 @@
             </ul>
             <div class="sidebar-footer">
                 <span id="version-info">版本: --</span>
+                <button id="btn-logout" type="button">注销登录</button>
             </div>
         </nav>
 
@@ -313,6 +314,31 @@
                         </div>
                     </div>
 
+                    <div class="config-section web-only">
+                        <h2>账户安全</h2>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="auth-username">用户名</label>
+                                <input type="text" id="auth-username" class="text-input" minlength="3" maxlength="32" autocomplete="username">
+                            </div>
+                            <div class="form-group">
+                                <label for="auth-current-password">当前密码</label>
+                                <input type="password" id="auth-current-password" class="text-input" autocomplete="current-password">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="auth-new-password">新密码</label>
+                                <input type="password" id="auth-new-password" class="text-input" minlength="10" autocomplete="new-password" placeholder="留空表示不修改密码">
+                            </div>
+                            <div class="form-group">
+                                <label for="auth-confirm-password">确认新密码</label>
+                                <input type="password" id="auth-confirm-password" class="text-input" minlength="10" autocomplete="new-password">
+                            </div>
+                        </div>
+                        <button id="btn-change-credentials" type="button" class="btn btn-secondary">修改账户凭据</button>
+                    </div>
+
                     <!-- 系统设置 -->
                     <div class="config-section">
                         <h2>💻 系统设置</h2>
@@ -422,18 +448,26 @@
                         <!-- 转码参数 -->
                         <div class="config-section">
                             <h2>🔧 转码参数</h2>
+
+                            <!-- FFmpeg 输入选项（放在 -i 之前） -->
+                            <div class="form-group">
+                                <label for="ffmpeg-input-args">FFmpeg 输入选项 <span class="form-hint-inline">（放于 -i 之前）</span></label>
+                                <input type="text" id="ffmpeg-input-args" class="text-input" placeholder="-hwaccel qsv -hwaccel_output_format qsv">
+                                <span class="form-hint">用于硬件解码加速等输入侧配置，留空表示不使用</span>
+                            </div>
+
                             <div class="form-group">
                                 <label for="ffmpeg-params">FFmpeg 参数</label>
-                                <input type="text" id="ffmpeg-params" class="text-input" placeholder="-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k">
+                                <input type="text" id="ffmpeg-params" class="text-input" placeholder="-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k">
                                 <span class="form-hint">自定义 FFmpeg 编码参数</span>
                             </div>
                             <div class="form-group">
                                 <label>预设方案</label>
                                 <div class="presets">
-                                    <button class="preset-btn" data-preset="h264-high">H.264 高质量</button>
-                                    <button class="preset-btn" data-preset="h264-medium">H.264 中等</button>
-                                    <button class="preset-btn" data-preset="h265-medium">H.265 中等</button>
-                                    <button class="preset-btn" data-preset="av1-medium">AV1 中等</button>
+                                    <button class="preset-btn" data-preset="h264-high">QSV H.264 高质量</button>
+                                    <button class="preset-btn" data-preset="h264-medium">QSV H.264 中等</button>
+                                    <button class="preset-btn" data-preset="h265-medium">QSV H.265 中等</button>
+                                    <button class="preset-btn" data-preset="av1-medium">QSV AV1 中等</button>
                                 </div>
                             </div>
                             <div class="form-row">
@@ -445,24 +479,40 @@
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                        <label for="max-fps">帧率上限</label>
-                                        <div class="combobox-container">
-                                            <input type="text" id="max-fps" class="text-input combobox-input" placeholder="不限制" list="max-fps-presets">
-                                            <datalist id="max-fps-presets">
-                                                <option value="24">
-                                                <option value="25">
-                                                <option value="29.97">
-                                                <option value="30">
-                                                <option value="50">
-                                                <option value="59.94">
-                                                <option value="60">
-                                                <option value="不限制">
-                                                <option value="自定义">
-                                            </datalist>
-                                        </div>
-                                        <span class="form-hint">小于等于此值保留原帧率，大于此值则限制</span>
+                                    <label for="max-fps">帧率上限</label>
+                                    <div class="combobox-container">
+                                        <input type="text" id="max-fps" class="text-input combobox-input" placeholder="不限制" list="max-fps-presets">
+                                        <datalist id="max-fps-presets">
+                                            <option value="24">
+                                            <option value="25">
+                                            <option value="29.97">
+                                            <option value="30">
+                                            <option value="50">
+                                            <option value="59.94">
+                                            <option value="60">
+                                            <option value="不限制">
+                                            <option value="自定义">
+                                        </datalist>
                                     </div>
+                                    <span class="form-hint">小于等于此值保留原帧率，大于此值则限制</span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="transcode-max-workers">并发转码路数</label>
+                                    <input type="number" id="transcode-max-workers" class="text-input" value="1" min="1" max="32" step="1">
+                                    <span class="form-hint">同时运行几个 FFmpeg 任务（如显卡有多个媒体引擎可设为 2~4）</span>
+                                </div>
                             </div>
+
+                            <!-- QSV 滤镜链重初始化失败回退策略 -->
+                            <div class="form-group">
+                                <label for="qsv-reinit-strategy">QSV 分辨率变化回退策略</label>
+                                <select id="qsv-reinit-strategy" class="text-input">
+                                    <option value="nv12">独立 NV12 池自动重试（推荐）</option>
+                                    <option value="error">直接失败</option>
+                                </select>
+                                <span class="form-hint">回退池固定单并发，不占用主转码池；仍使用 Intel QSV 解码和编码</span>
+                            </div>
+
                             <div class="form-group checkbox-group">
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="preserve-cover" checked>
@@ -601,6 +651,7 @@
         </div>
     </div>
 
+    <script src="web-api.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

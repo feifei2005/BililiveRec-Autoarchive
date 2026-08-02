@@ -1,0 +1,36 @@
+server:
+  bind_address: "0.0.0.0"
+  api_token: "replace-with-a-long-random-token"
+  port: 8080
+  webhook_path: "/webhook"
+  webhook_enabled: true
+
+processing:
+  input_dir: "/data/input"
+  output_root: "/data/output"
+  max_concurrent: 1
+  min_file_size_kb: 1024
+  check_video_stream: true
+  discard_failed_files: false
+  delete_original: false
+  conflict_mode: "skip"
+  scan_interval_min: 5
+
+rules:
+  streamer_name_regex: "-([^\\-]+)"
+  path_template: "{{.OutputDir}}/{{.Streamer}}/{{.Year}}/{{.Month}}/{{.Day}}"
+
+ffmpeg:
+  path: "ffmpeg"
+  ffprobe_path: "ffprobe"
+
+transcode:
+  default_format: "mp4"
+  default_params: "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k"
+  input_args: "-hwaccel qsv -hwaccel_output_format qsv"
+  max_concurrent: 1
+  output_dir: "/data/output"
+  max_fps: 0
+  preserve_cover: true
+  delete_source_on_success: false
+  qsv_reinit_strategy: "nv12"

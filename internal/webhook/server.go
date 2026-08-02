@@ -3,16 +3,21 @@ package webhook
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/user/bililive-recorder-autoarchive/internal/transcoder"
+	"github.com/user/bililive-recorder-autoarchive/internal/webauth"
 )
 
 // EventType 事件类型
@@ -58,15 +63,21 @@ type Server struct {
 	processedIDs sync.Map // 用于事件去重，存储已处理的 EventId
 	mu           sync.RWMutex
 	app          TranscoderProvider // 应用程序实例，用于获取转码器
+	webUI        http.Handler
+	appAPI       http.Handler
+	auth         *webauth.Manager
 }
 
 // Config 服务器配置
 type Config struct {
-	Port         int           // 监听端口
-	WebhookPath  string        // Webhook 路径
-	DedupeWindow time.Duration // 去重时间窗口，超过此时间的 EventId 会被清理
-	InputDir     string        // 录播姬工作目录，用于拼接完整路径
-	MaxFPS       float64       // 帧率上限，0 表示不限制
+	BindAddress      string                     // 监听地址；留空表示所有网卡
+	APIToken         string                     // 可选 Bearer Token
+	Port             int                        // 监听端口
+	WebhookPath      string                     // Webhook 路径
+	DedupeWindow     time.Duration              // 去重时间窗口，超过此时间的 EventId 会被清理
+	InputDir         string                     // 录播姬工作目录，用于拼接完整路径
+	MaxFPS           float64                    // 帧率上限，0 表示不限制
+	DefaultTranscode transcoder.TranscodeConfig // API 请求未指定字段时使用
 }
 
 // New 创建新的 Webhook 服务器实例
@@ -95,10 +106,31 @@ func (s *Server) SetApp(app TranscoderProvider) {
 	s.app = app
 }
 
+// SetWebUI installs the browser UI at the root path.
+func (s *Server) SetWebUI(handler http.Handler) { s.webUI = handler }
+
+// SetAppAPI installs the browser-to-Go RPC bridge.
+func (s *Server) SetAppAPI(handler http.Handler) { s.appAPI = handler }
+
+// SetAuth enables single-user browser sessions while retaining API-token access.
+func (s *Server) SetAuth(auth *webauth.Manager) { s.auth = auth }
+
 // Start 启动服务器
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
+	if s.webUI != nil {
+		mux.Handle("/", s.webUI)
+	} else {
+		mux.HandleFunc("/", s.handleInfo)
+	}
+	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc(s.config.WebhookPath, s.handleWebhook)
+	if s.appAPI != nil {
+		mux.Handle("/api/app/", s.appAPI)
+	}
+	if s.auth != nil {
+		s.auth.RegisterRoutes(mux)
+	}
 
 	// 转码相关 API 端点
 	mux.HandleFunc("/api/transcode/select-folder", s.handleSelectFolder)
@@ -107,9 +139,21 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/transcode/tasks", s.handleGetTasks)
 	mux.HandleFunc("/api/transcode/cancel", s.handleCancelTask)
 
+	listenAddress := fmt.Sprintf(":%d", s.config.Port)
+	if s.config.BindAddress != "" {
+		listenAddress = fmt.Sprintf("%s:%d", s.config.BindAddress, s.config.Port)
+	}
+	var handler http.Handler = mux
+	if s.auth != nil {
+		handler = s.auth.Middleware(handler, s.config.APIToken, s.config.WebhookPath)
+	} else if s.config.APIToken != "" {
+		handler = s.requireAPIToken(handler)
+	} else if s.config.BindAddress == "" || s.config.BindAddress == "0.0.0.0" || s.config.BindAddress == "::" {
+		log.Printf("警告: HTTP 服务监听外部网卡但未配置 api_token")
+	}
 	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.config.Port),
-		Handler:      mux,
+		Addr:         listenAddress,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}
@@ -117,8 +161,71 @@ func (s *Server) Start() error {
 	// 启动定时清理过期的去重记录
 	go s.cleanupExpiredEvents()
 
-	log.Printf("Webhook 服务器启动在端口 %d，路径 %s", s.config.Port, s.config.WebhookPath)
+	log.Printf("HTTP 服务器启动在 %s，Webhook 路径 %s", listenAddress, s.config.WebhookPath)
 	return s.server.ListenAndServe()
+}
+
+func (s *Server) requireAPIToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health checks and BililiveRecorder webhook delivery do not carry the
+		// management API token. The webhook remains constrained to InputDir.
+		if r.URL.Path == "/healthz" || r.URL.Path == s.config.WebhookPath {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if provided == "" {
+			provided = r.Header.Get("X-API-Key")
+		}
+		if provided == "" {
+			if cookie, err := r.Cookie("server_token"); err == nil {
+				provided = cookie.Value
+			}
+		}
+		if provided == "" {
+			provided = r.URL.Query().Get("token")
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(s.config.APIToken)) == 1 {
+				http.SetCookie(w, &http.Cookie{Name: "server_token", Value: provided, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+				cleanURL := *r.URL
+				query := cleanURL.Query()
+				query.Del("token")
+				cleanURL.RawQuery = query.Encode()
+				http.Redirect(w, r, cleanURL.String(), http.StatusSeeOther)
+				return
+			}
+		}
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.config.APIToken)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":   "server",
+		"status": "ok",
+		"endpoints": []string{
+			"GET /healthz",
+			"POST /api/transcode/scan",
+			"POST /api/transcode/start",
+			"GET /api/transcode/tasks",
+			"POST /api/transcode/cancel",
+		},
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // Stop 停止服务器
@@ -159,6 +266,11 @@ func (s *Server) isDuplicate(eventId string) bool {
 
 // handleWebhook 处理 Webhook 请求
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackRemoteAddr(r.RemoteAddr) {
+		http.Error(w, "webhook is only available from localhost", http.StatusForbidden)
+		return
+	}
+
 	// 尽快返回响应，避免录播姬等待超时
 	defer func() {
 		w.WriteHeader(http.StatusNoContent)
@@ -188,6 +300,15 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	go s.processEvent(&event)
 }
 
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // processEvent 异步处理事件
 func (s *Server) processEvent(event *Event) {
 	s.mu.RLock()
@@ -207,11 +328,39 @@ func (s *Server) processEvent(event *Event) {
 
 // GetFullPath 获取文件的完整路径
 // 将录播姬返回的相对路径与配置的工作目录拼接
-func (s *Server) GetFullPath(relativePath string) string {
-	if s.config.InputDir == "" {
-		return relativePath
+func (s *Server) GetFullPath(relativePath string) (string, error) {
+	if strings.TrimSpace(s.config.InputDir) == "" {
+		return "", fmt.Errorf("webhook input directory is not configured")
 	}
-	return s.config.InputDir + "/" + relativePath
+	if strings.TrimSpace(relativePath) == "" {
+		return "", fmt.Errorf("webhook relative path is empty")
+	}
+
+	basePath, err := filepath.Abs(s.config.InputDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve webhook input directory: %w", err)
+	}
+	basePath, err = filepath.EvalSymlinks(basePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve webhook input directory symlinks: %w", err)
+	}
+
+	localPath := filepath.FromSlash(relativePath)
+	if filepath.IsAbs(localPath) {
+		return "", fmt.Errorf("webhook path must be relative")
+	}
+	fullPath, err := filepath.EvalSymlinks(filepath.Join(basePath, filepath.Clean(localPath)))
+	if err != nil {
+		return "", fmt.Errorf("resolve webhook file path: %w", err)
+	}
+	rel, err := filepath.Rel(basePath, fullPath)
+	if err != nil {
+		return "", fmt.Errorf("validate webhook file path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("webhook path escapes input directory")
+	}
+	return fullPath, nil
 }
 
 // ================== 转码 API 处理函数 ==================
@@ -339,10 +488,13 @@ func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Files      []string `json:"files"`
-		CustomArgs string   `json:"customArgs"`
-		OutputDir  string   `json:"outputDir"`
-		OutputExt  string   `json:"outputExt"`
+		Files                 []string `json:"files"`
+		CustomArgs            string   `json:"customArgs"`
+		InputArgs             string   `json:"inputArgs"`
+		OutputDir             string   `json:"outputDir"`
+		OutputExt             string   `json:"outputExt"`
+		QSVReinitStrategy     string   `json:"qsvReinitStrategy"`
+		DeleteSourceOnSuccess *bool    `json:"deleteSourceOnSuccess"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -371,11 +523,27 @@ func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
 	tc := s.app.GetTranscoder()
 	taskIDs := make([]string, 0, len(req.Files))
 
-	config := transcoder.TranscodeConfig{
-		CustomArgs: req.CustomArgs,
-		OutputDir:  req.OutputDir,
-		OutputExt:  req.OutputExt,
-		MaxFPS:     s.config.MaxFPS,
+	config := s.config.DefaultTranscode
+	if req.CustomArgs != "" {
+		config.CustomArgs = req.CustomArgs
+	}
+	if req.InputArgs != "" {
+		config.InputArgs = req.InputArgs
+	}
+	if req.OutputDir != "" {
+		config.OutputDir = req.OutputDir
+	}
+	if req.OutputExt != "" {
+		config.OutputExt = req.OutputExt
+	}
+	if req.QSVReinitStrategy != "" {
+		config.QSVReinitStrategy = req.QSVReinitStrategy
+	}
+	if req.DeleteSourceOnSuccess != nil {
+		config.DeleteSourceOnSuccess = *req.DeleteSourceOnSuccess
+	}
+	if config.MaxFPS == 0 {
+		config.MaxFPS = s.config.MaxFPS
 	}
 
 	for _, file := range req.Files {

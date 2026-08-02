@@ -20,17 +20,19 @@ B站录播姬自动归档工具，专为配合 [BililiveRecorder](https://github
 ### 前置要求
 
 - 系统中已安装 [FFmpeg](https://ffmpeg.org/)，并添加到系统 PATH 环境变量中（或在配置文件中指定路径）
-- Windows 10/11
-  <br><sub>*如果你想给其它系统做适配，欢迎提交 PR！*</sub>
+- Windows 10/11：运行桌面版
+- Linux amd64/arm64：运行无桌面依赖的 `server`；Intel QSV 转码需要对应显卡驱动、oneVPL/MFX 运行库及 QSV 版 FFmpeg
 
 ### 安装步骤
 
-1. 在 [Releases](https://github.com/user/bililive-recorder-autoarchive/releases) 页面下载最新版本的压缩包
+1. 在 [Releases](https://github.com/feifei2005/BililiveRec-Autoarchive/releases) 页面下载最新版本的压缩包
 2. 解压到任意目录
 3. 运行 `BililiveRecorder-autoarchive.exe`
 4. 程序会自动在浏览器中打开 Web 管理界面
 
 ## 📖 使用方法
+
+Linux Intel QSV 服务端的构建、配置、systemd 和更新说明见 [Linux Server 部署指南](docs/server-deployment.md)。服务端包含内嵌 Web 管理页、单用户登录、Webhook 自动归档以及独立单并发 NV12 回退池。
 
 ### 录播自动归档
 
@@ -95,7 +97,7 @@ server:
 -c:v av1_amf -profile:v main -rc:v cqp -qp_i 100 -qp_p 100 -c:a libopus -b:a 96k
 ```
 
-**Intel 硬件加速 (QSV)��**
+**Intel 硬件加速 (QSV)：**
 ```
 -c:v h264_qsv -preset medium -global_quality 23 -c:a aac -b:a 128k
 ```
@@ -120,7 +122,7 @@ server:
 
 - **录播转MKV待处理列表UI可能无法正常显示**（待验证）
 
-如果你遇到任何问题（包括上述已知问题），欢迎在 [Issues](https://github.com/user/bililive-recorder-autoarchive/issues) 页面提交反馈。
+如果你遇到任何问题（包括上述已知问题），欢迎在 [Issues](https://github.com/feifei2005/BililiveRec-Autoarchive/issues) 页面提交反馈。
 
 ## 📋 更新日志
 

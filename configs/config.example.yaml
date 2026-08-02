@@ -3,6 +3,10 @@
 
 # 全局设置 - Webhook 服务器配置
 server:
+  # 留空表示监听所有网卡；仅允许本机访问可填 127.0.0.1
+  bind_address: ""
+  # 可选 HTTP Bearer Token；监听外部网卡时建议设置
+  api_token: ""
   port: 8080                    # 监听端口
   webhook_path: "/webhook"      # Webhook 路径
 
@@ -95,9 +99,14 @@ transcode:
   # 默认输出格式 (mp4, mkv)
   default_format: mp4
   # 默认转码参数（FFmpeg 参数）
-  # 示例: H.264 编码，中等预设，CRF 23，AAC 音频 192kbps
-  default_params: "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k"
+  # Intel QSV AV1 编码，质量 23，AAC 音频 192kbps
+  default_params: "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k"
+  # FFmpeg 输入选项（放在 -i 之前）
+  # Intel QSV 硬件解码，正常任务保留在显存表面中
+  input_args: "-hwaccel qsv -hwaccel_output_format qsv"
   # 最大并发转码任务数
+  # 即同时运行几个 FFmpeg 进程。显卡有多个媒体引擎时可提高此值（如 2~4），
+  # 单条视频流通常只能利用一个媒体引擎，多路并发才能喂饱显卡。
   max_concurrent: 1
   # 输出目录（留空则输出到源文件同目录）
   output_dir: ""
@@ -111,6 +120,14 @@ transcode:
   preserve_cover: true
   # 转码成功后是否删除源文件
   delete_source_on_success: false
+  # QSV 滤镜链重初始化失败的回退策略
+  # 当输入视频流分辨率中途变化时，QSV 硬件表面格式无法重新初始化滤镜链，
+  # FFmpeg 报错 "Error reinitializing filters" + "Function not implemented"
+  # 可选值:
+  #   - nv12  : 移交独立单并发池，保持 Intel QSV 解码和编码（默认）
+  #   - error : 直接失败
+  # NV12 池不占用主转码池并发；问题任务排队串行重试，主池继续处理后续任务。
+  qsv_reinit_strategy: "nv12"
 
 # 注意：数据库文件 (data.db) 默认保存在程序运行目录
 # 日志默认输出到控制台

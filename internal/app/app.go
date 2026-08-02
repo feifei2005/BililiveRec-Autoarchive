@@ -24,6 +24,7 @@ type App struct {
 	storage    storage.Storage
 	autostart  *autostart.AutoStart
 	transcoder *transcoder.Transcoder
+	configPath string
 
 	// 回调函数
 	onQuit                    func()
@@ -42,6 +43,16 @@ func NewApp() *App {
 // SetConfig 设置配置
 func (a *App) SetConfig(cfg *config.Config) {
 	a.config = cfg
+}
+
+// SetConfigPath sets the file updated by browser or desktop configuration changes.
+func (a *App) SetConfigPath(path string) { a.configPath = path }
+
+func (a *App) configFilePath() string {
+	if a.configPath != "" {
+		return a.configPath
+	}
+	return filepath.Join(".", "config.yaml")
 }
 
 // SetProcessor 设置处理器
@@ -179,8 +190,7 @@ func (a *App) SaveConfig(data ConfigData) error {
 	a.config.Rules.StreamerNameRegex = data.StreamerNameRegex
 
 	// 保存到配置文件
-	configPath := filepath.Join(".", "config.yaml")
-	if err := a.config.Save(configPath); err != nil {
+	if err := a.config.Save(a.configFilePath()); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
@@ -529,36 +539,44 @@ type TranscodeRequest struct {
 	Files                 []string `json:"files"`
 	Params                string   `json:"params"`
 	Format                string   `json:"format"`
+	InputArgs             string   `json:"inputArgs"` // FFmpeg 输入选项，放在 -i 之前（如 -hwaccel qsv）
 	PreserveCover         bool     `json:"preserveCover"`
 	DeleteSourceOnSuccess bool     `json:"deleteSourceOnSuccess"`
-	MaxFPS                float64  `json:"maxFps"` // 帧率上限，0 表示不限制
+	MaxFPS                float64  `json:"maxFps"`            // 帧率上限，0 表示不限制（任务级默认）
+	QSVReinitStrategy     string   `json:"qsvReinitStrategy"` // QSV 滤镜链重初始化失败回退策略
 }
 
 // TranscodeSettings 转码设置（用于持久化）
 type TranscodeSettings struct {
 	Params                string  `json:"params"`
 	Format                string  `json:"format"`
+	InputArgs             string  `json:"inputArgs"` // FFmpeg 输入选项，放在 -i 之前
 	PreserveCover         bool    `json:"preserveCover"`
 	DeleteSourceOnSuccess bool    `json:"deleteSourceOnSuccess"`
 	MaxFPS                float64 `json:"maxFps"`
+	QSVReinitStrategy     string  `json:"qsvReinitStrategy"` // QSV 滤镜链重初始化失败回退策略：error/segment/nv12
 }
 
 // GetTranscodeSettings 获取保存的转码设置
 func (a *App) GetTranscodeSettings() TranscodeSettings {
 	if a.config == nil {
 		return TranscodeSettings{
-			Params:        "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k",
-			Format:        "mp4",
-			PreserveCover: true,
+			Params:            "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k",
+			Format:            "mp4",
+			InputArgs:         "-hwaccel qsv -hwaccel_output_format qsv",
+			PreserveCover:     true,
+			QSVReinitStrategy: "nv12",
 		}
 	}
 
 	return TranscodeSettings{
 		Params:                a.config.Transcode.DefaultParams,
 		Format:                a.config.Transcode.DefaultFormat,
+		InputArgs:             a.config.Transcode.InputArgs,
 		PreserveCover:         a.config.Transcode.PreserveCover,
 		DeleteSourceOnSuccess: a.config.Transcode.DeleteSourceOnSuccess,
 		MaxFPS:                a.config.Transcode.MaxFPS,
+		QSVReinitStrategy:     a.config.Transcode.QSVReinitStrategy,
 	}
 }
 
@@ -571,21 +589,27 @@ func (a *App) SaveTranscodeSettings(settings TranscodeSettings) error {
 	// 更新配置
 	a.config.Transcode.DefaultParams = settings.Params
 	a.config.Transcode.DefaultFormat = settings.Format
+	a.config.Transcode.InputArgs = settings.InputArgs
 	a.config.Transcode.PreserveCover = settings.PreserveCover
 	a.config.Transcode.DeleteSourceOnSuccess = settings.DeleteSourceOnSuccess
 	a.config.Transcode.MaxFPS = settings.MaxFPS
+	a.config.Transcode.QSVReinitStrategy = settings.QSVReinitStrategy
 
 	// 验证和补全配置
 	a.config.FillDefaults()
 
+	// 同步到转码器运行时（热更新 QSV 回退策略）
+	if a.transcoder != nil {
+		a.transcoder.SetQSVReinitStrategy(transcoder.QSVReinitStrategy(a.config.Transcode.QSVReinitStrategy))
+	}
+
 	// 保存到文件
-	configPath := filepath.Join(".", "config.yaml")
-	if err := a.config.Save(configPath); err != nil {
+	if err := a.config.Save(a.configFilePath()); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	log.Printf("[app] 转码设置已保存: format=%s, maxFPS=%.2f, deleteSource=%v, preserveCover=%v",
-		settings.Format, settings.MaxFPS, settings.DeleteSourceOnSuccess, settings.PreserveCover)
+	log.Printf("[app] 转码设置已保存: format=%s, maxFPS=%.2f, deleteSource=%v, preserveCover=%v, qsvStrategy=%s",
+		settings.Format, settings.MaxFPS, settings.DeleteSourceOnSuccess, settings.PreserveCover, a.config.Transcode.QSVReinitStrategy)
 	return nil
 }
 
@@ -600,7 +624,9 @@ type TranscodeResult struct {
 type TranscodeTaskInfo struct {
 	ID                  string  `json:"id"`
 	InputFile           string  `json:"inputFile"`
+	OutputFile          string  `json:"outputFile"` // 输出文件
 	Status              string  `json:"status"`
+	ExecutionPool       string  `json:"executionPool"`
 	Progress            float64 `json:"progress"`
 	Error               string  `json:"error"`
 	ErrorLogPath        string  `json:"errorLogPath"`        // 错误日志文件路径
@@ -697,28 +723,33 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		settings := TranscodeSettings{
 			Params:                req.Params,
 			Format:                req.Format,
+			InputArgs:             req.InputArgs,
 			PreserveCover:         req.PreserveCover,
 			DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
 			MaxFPS:                maxFPS,
+			QSVReinitStrategy:     req.QSVReinitStrategy,
 		}
 		if err := a.SaveTranscodeSettings(settings); err != nil {
 			log.Printf("[app] 保存转码设置失败: %v", err)
 		}
 	}()
 
-	log.Printf("[app] 开始转码: files=%d, format=%s, maxFPS=%.2f, deleteSource=%v",
-		len(req.Files), req.Format, maxFPS, req.DeleteSourceOnSuccess)
-
-	config := transcoder.TranscodeConfig{
+	// 构造转码配置
+	tConfig := transcoder.TranscodeConfig{
+		InputArgs:             req.InputArgs,
+		QSVReinitStrategy:     req.QSVReinitStrategy,
 		CustomArgs:            req.Params,
 		OutputExt:             outputExt,
 		DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
 		MaxFPS:                maxFPS,
 	}
 
+	log.Printf("[app] 开始转码: files=%d, format=%s, maxFPS=%.2f, deleteSource=%v",
+		len(req.Files), req.Format, maxFPS, req.DeleteSourceOnSuccess)
+
 	taskCount := 0
 	for _, file := range req.Files {
-		_, err := a.transcoder.AddTask(file, config)
+		_, err := a.transcoder.AddTask(file, tConfig)
 		if err != nil {
 			log.Printf("添加转码任务失败: %s, 错误: %v", file, err)
 			continue
@@ -730,6 +761,34 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		Success:   taskCount > 0,
 		TaskCount: taskCount,
 	}
+}
+
+// GetTranscodeMaxWorkers 获取当前转码并发路数
+func (a *App) GetTranscodeMaxWorkers() int {
+	if a.transcoder == nil {
+		return 1
+	}
+	return a.transcoder.MaxWorkers()
+}
+
+// SetTranscodeMaxWorkers 设置转码并发路数（热更新）
+func (a *App) SetTranscodeMaxWorkers(n int) error {
+	if a.transcoder == nil {
+		return fmt.Errorf("转码器未初始化")
+	}
+	if n <= 0 {
+		return fmt.Errorf("并发路数必须大于 0")
+	}
+	a.transcoder.SetMaxWorkers(n)
+
+	// 同步到配置文件
+	if a.config != nil {
+		a.config.Transcode.MaxConcurrent = n
+		if err := a.config.Save(a.configFilePath()); err != nil {
+			return fmt.Errorf("保存并发路数配置失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetTranscodeTasks 获取所有转码任务
@@ -745,7 +804,9 @@ func (a *App) GetTranscodeTasks() []TranscodeTaskInfo {
 		result = append(result, TranscodeTaskInfo{
 			ID:                  task.ID,
 			InputFile:           task.InputPath,
+			OutputFile:          task.OutputPath,
 			Status:              string(task.Status),
+			ExecutionPool:       task.ExecutionPool,
 			Progress:            task.Progress,
 			Error:               task.Error,
 			ErrorLogPath:        task.ErrorLogPath,

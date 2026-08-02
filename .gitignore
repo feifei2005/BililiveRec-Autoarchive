@@ -73,6 +73,7 @@ config.yaml
 
 # 日志文件
 *.log
+server-auth.json
 logs/
 
 # 临时文件

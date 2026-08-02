@@ -18,21 +18,22 @@ const (
 
 // TranscodeTask 转码任务
 type TranscodeTask struct {
-	ID           string          `json:"id"`           // 任务ID
-	SeqNum       int64           `json:"seqNum"`       // 任务序号，用于排序（按添加顺序）
-	InputPath    string          `json:"inputFile"`    // 输入文件路径
-	OutputPath   string          `json:"outputPath"`   // 输出文件路径
-	Config       TranscodeConfig `json:"config"`       // 转码配置
-	Status       TaskStatus      `json:"status"`       // 任务状态
-	Progress     float64         `json:"progress"`     // 进度 (0-100)，基于已处理帧数/总帧数
-	Duration     float64         `json:"duration"`     // 视频总时长（秒）
-	CurrentTime  float64         `json:"currentTime"`  // 当前处理时间（秒）
-	Speed        string          `json:"speed"`        // 处理速度字符串（如 "1.5x"）
-	Error        string          `json:"error"`        // 错误信息（包含 FFmpeg 详细输出）
-	ErrorLogPath string          `json:"errorLogPath"` // 错误日志文件路径（失败时生成）
-	CreatedAt    time.Time       `json:"createdAt"`    // 创建时间
-	StartedAt    time.Time       `json:"startedAt"`    // 开始时间
-	CompletedAt  time.Time       `json:"completedAt"`  // 完成时间
+	ID            string          `json:"id"`            // 任务ID
+	SeqNum        int64           `json:"seqNum"`        // 任务序号，用于排序（按添加顺序）
+	InputPath     string          `json:"inputFile"`     // 输入文件路径
+	OutputPath    string          `json:"outputPath"`    // 输出文件路径
+	Config        TranscodeConfig `json:"config"`        // 转码配置
+	Status        TaskStatus      `json:"status"`        // 任务状态
+	ExecutionPool string          `json:"executionPool"` // 当前执行池：main 或 nv12
+	Progress      float64         `json:"progress"`      // 进度 (0-100)，基于已处理帧数/总帧数
+	Duration      float64         `json:"duration"`      // 视频总时长（秒）
+	CurrentTime   float64         `json:"currentTime"`   // 当前处理时间（秒）
+	Speed         string          `json:"speed"`         // 处理速度字符串（如 "1.5x"）
+	Error         string          `json:"error"`         // 错误信息（包含 FFmpeg 详细输出）
+	ErrorLogPath  string          `json:"errorLogPath"`  // 错误日志文件路径（失败时生成）
+	CreatedAt     time.Time       `json:"createdAt"`     // 创建时间
+	StartedAt     time.Time       `json:"startedAt"`     // 开始时间
+	CompletedAt   time.Time       `json:"completedAt"`   // 完成时间
 
 	// 已用时间
 	ElapsedSeconds float64 `json:"elapsedSeconds"` // 已用时间（秒）
@@ -56,6 +57,15 @@ type TranscodeTask struct {
 
 // TranscodeConfig 用户自定义的转码参数
 type TranscodeConfig struct {
+	// InputArgs FFmpeg 输入选项，放在 -i 之前
+	// 例如: "-hwaccel qsv -hwaccel_output_format qsv" 用于启用硬件解码加速
+	// 注意：不需要包含 -i 和输入文件路径，这些会自动添加
+	InputArgs string `json:"input_args" yaml:"input_args"`
+
+	// QSVReinitStrategy 指定本任务的分辨率变化回退策略。
+	// 为空时使用转码器的全局设置。
+	QSVReinitStrategy string `json:"qsv_reinit_strategy" yaml:"qsv_reinit_strategy"`
+
 	// CustomArgs 用户直接输入的 FFmpeg 参数字符串
 	// 例如: "-c:v av1_amf -profile:v main -level auto -rc:v cqp -qp_i 130 -qp_p 130 -quality high_quality -c:a libopus -b:a 96k -f mp4"
 	// 注意：不需要包含 -i 输入文件和输出文件路径，这些会自动添加
@@ -111,17 +121,19 @@ type CoverStreamInfo struct {
 // DefaultTranscodeConfig 返回默认转码配置
 func DefaultTranscodeConfig() TranscodeConfig {
 	return TranscodeConfig{
-		CustomArgs: "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k -f mp4",
-		OutputExt:  ".mp4",
+		InputArgs:         "-hwaccel qsv -hwaccel_output_format qsv",
+		QSVReinitStrategy: "nv12",
+		CustomArgs:        "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k -f mp4",
+		OutputExt:         ".mp4",
 	}
 }
 
 // Presets 预设配置（用户可以直接复制这些参数）
 var Presets = map[string]string{
-	"high_quality": "-c:v libx264 -preset slow -crf 18 -c:a aac -b:a 320k -f mp4",
-	"balanced":     "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k -f mp4",
-	"small_size":   "-c:v libx264 -preset fast -crf 28 -c:a aac -b:a 128k -f mp4",
+	"high_quality": "-c:v av1_qsv -global_quality 18 -look_ahead 1 -c:a aac -b:a 320k -f mp4",
+	"balanced":     "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k -f mp4",
+	"small_size":   "-c:v av1_qsv -global_quality 28 -look_ahead 1 -c:a aac -b:a 128k -f mp4",
 	"copy":         "-c:v copy -c:a copy -f mp4",
-	"av1_amd":      "-c:v av1_amf -profile:v main -level auto -rc:v cqp -qp_i 130 -qp_p 130 -quality high_quality -c:a libopus -b:a 96k -f mp4",
+	"av1_intel":    "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a libopus -b:a 96k -f mp4",
 	"hevc_nvenc":   "-c:v hevc_nvenc -preset p4 -cq 28 -c:a aac -b:a 192k -f mp4",
 }
