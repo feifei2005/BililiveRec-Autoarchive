@@ -665,7 +665,6 @@ document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
 // 转码状态
 const transcodeState = {
     scannedVideos: [],
-    isPolling: false,
     pauseStatus: {
         paused: false,
         pauseAfterCurrent: false
@@ -940,7 +939,7 @@ async function startTranscode() {
         if (result.success) {
             showToast(`已添加 ${result.taskCount} 个转码任务`, 'success');
             document.getElementById('btn-cancel-transcode').disabled = false;
-            startTranscodePolling();
+            await loadTranscodeTasks();
         } else {
             showToast(`添加任务失败: ${result.error}`, 'error');
         }
@@ -1194,32 +1193,6 @@ function getTranscodeStatusText(status) {
         'cancelled': '已取消'
     };
     return textMap[status] || status;
-}
-
-// 开始轮询转码任务状态
-function startTranscodePolling() {
-    if (transcodeState.isPolling) return;
-    
-    transcodeState.isPolling = true;
-    pollTranscodeStatus();
-}
-
-// 轮询转码状态
-async function pollTranscodeStatus() {
-    if (!transcodeState.isPolling) return;
-    
-    const hasActiveTasks = await loadTranscodeTasks();
-    
-    if (hasActiveTasks && state.currentPage === 'transcode') {
-        setTimeout(pollTranscodeStatus, 1000);
-    } else {
-        transcodeState.isPolling = false;
-    }
-}
-
-// 停止转码轮询
-function stopTranscodePolling() {
-    transcodeState.isPolling = false;
 }
 
 // 预设按钮点击事件
@@ -1655,21 +1628,37 @@ async function handleDrop(e) {
 // ==================== 自动刷新 ====================
 
 function startAutoRefresh() {
-    // 每 1 秒刷新一次当前页面（转封装进度需要更频繁的刷新）
-    state.refreshInterval = setInterval(() => {
-        if (state.currentPage === 'status') {
-            loadStatusPage();
-        } else if (state.currentPage === 'tasks') {
-            loadTasksPage();
-        }
-    }, 1000);
+    if (document.visibilityState !== 'visible' || state.refreshInterval) return;
+    state.refreshInterval = setTimeout(runAutoRefresh, 1000);
 }
 
 function stopAutoRefresh() {
     if (state.refreshInterval) {
-        clearInterval(state.refreshInterval);
+        clearTimeout(state.refreshInterval);
         state.refreshInterval = null;
     }
+}
+
+async function refreshCurrentPage() {
+    switch (state.currentPage) {
+        case 'status':
+            await loadStatusPage();
+            break;
+        case 'tasks':
+            await loadTasksPage();
+            break;
+        case 'transcode':
+            await loadTranscodeTasks();
+            break;
+    }
+}
+
+async function runAutoRefresh() {
+    state.refreshInterval = null;
+    if (document.visibilityState !== 'visible') return;
+
+    await refreshCurrentPage();
+    startAutoRefresh();
 }
 
 // ==================== 系统信息 ====================
@@ -1724,29 +1713,13 @@ window.addEventListener('beforeunload', () => {
     stopAutoRefresh();
 });
 
-// 页面可见性变化处理（从后台切换回前台时刷新数据）
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-        // 页面从后台切换到前台
-        console.log('页面恢复可见，刷新数据...');
-        
-        // 根据当前页面刷新对应数据
-        switch (state.currentPage) {
-            case 'status':
-                loadStatusPage();
-                break;
-            case 'tasks':
-                loadTasksPage();
-                break;
-            case 'transcode':
-                loadTranscodeTasks();
-                // 如果有活跃任务且未在轮询，重新启动轮询
-                if (!transcodeState.isPolling) {
-                    startTranscodePolling();
-                }
-                break;
-        }
-    }
+// 后台标签页停止请求，回到前台时立即刷新并恢复每秒轮询。
+document.addEventListener('visibilitychange', async () => {
+    stopAutoRefresh();
+    if (document.visibilityState !== 'visible') return;
+
+    await refreshCurrentPage();
+    startAutoRefresh();
 });
 
 // ==================== 退出确认弹窗 ====================
