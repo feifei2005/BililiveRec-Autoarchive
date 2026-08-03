@@ -609,6 +609,11 @@
                                 <span class="tab-text">处理中</span>
                                 <span class="tab-count" id="transcode-processing-count">0</span>
                             </button>
+                            <button class="status-tab-btn" data-status="nv12">
+                                <span class="tab-icon">🛠️</span>
+                                <span class="tab-text">深度处理</span>
+                                <span class="tab-count" id="transcode-nv12-count">0</span>
+                            </button>
                             <button class="status-tab-btn" data-status="success">
                                 <span class="tab-icon">✅</span>
                                 <span class="tab-text">已完成</span>
@@ -628,6 +633,9 @@
                             </div>
                             <div class="status-tab-pane" id="transcode-pane-processing">
                                 <div id="transcode-processing-tasks" class="task-list-full"></div>
+                            </div>
+                            <div class="status-tab-pane" id="transcode-pane-nv12">
+                                <div id="transcode-nv12-tasks" class="task-list-full"></div>
                             </div>
                             <div class="status-tab-pane" id="transcode-pane-success">
                                 <div id="transcode-success-tasks" class="task-list-full"></div>

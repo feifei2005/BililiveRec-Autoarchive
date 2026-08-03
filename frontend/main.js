@@ -1026,10 +1026,13 @@ async function updateGlobalTranscodeStatus() {
 
 // 渲染转码任务列表（分页标签形式）
 function renderTranscodeTaskList(tasks) {
-    // 按状态分组（任务已在后端按 SeqNum 排序，保持添加顺序）
+    // NV12 池中的活动任务独立展示；结束后仍按最终状态归档。
+    const isNV12Active = t => t.executionPool === 'nv12' &&
+        (t.status === 'pending' || t.status === 'processing');
     const grouped = {
-        pending: tasks.filter(t => t.status === 'pending'),
-        processing: tasks.filter(t => t.status === 'processing'),
+        pending: tasks.filter(t => t.status === 'pending' && !isNV12Active(t)),
+        processing: tasks.filter(t => t.status === 'processing' && !isNV12Active(t)),
+        nv12: tasks.filter(isNV12Active),
         success: tasks.filter(t => t.status === 'success'),
         cancelled: tasks.filter(t => t.status === 'cancelled' || t.status === 'failed')
     };
@@ -1037,23 +1040,25 @@ function renderTranscodeTaskList(tasks) {
     // 更新标签上的计数
     document.getElementById('transcode-pending-count').textContent = grouped.pending.length;
     document.getElementById('transcode-processing-count').textContent = grouped.processing.length;
+    document.getElementById('transcode-nv12-count').textContent = grouped.nv12.length;
     document.getElementById('transcode-success-count').textContent = grouped.success.length;
     document.getElementById('transcode-cancelled-count').textContent = grouped.cancelled.length;
     
     // 渲染每个分区
     renderTranscodeTaskPane('transcode-pending-tasks', grouped.pending);
     renderTranscodeTaskPane('transcode-processing-tasks', grouped.processing);
+    renderTranscodeTaskPane('transcode-nv12-tasks', grouped.nv12, '暂无深度处理任务');
     renderTranscodeTaskPane('transcode-success-tasks', grouped.success);
     renderTranscodeTaskPane('transcode-cancelled-tasks', grouped.cancelled);
 }
 
 // 渲染单个转码任务面板
-function renderTranscodeTaskPane(containerId, tasks) {
+function renderTranscodeTaskPane(containerId, tasks, emptyText = '暂无任务') {
     const container = document.getElementById(containerId);
     if (!container) return;
     
     if (tasks.length === 0) {
-        container.innerHTML = '<p class="empty-message">暂无任务</p>';
+        container.innerHTML = `<p class="empty-message">${emptyText}</p>`;
         return;
     }
     
@@ -1091,7 +1096,10 @@ function switchTranscodeStatusTab(status) {
 // 渲染单个转码任务项
 function renderTranscodeTaskItem(t) {
     const statusClass = getTranscodeStatusClass(t.status);
-    const statusText = getTranscodeStatusText(t.status);
+    let statusText = getTranscodeStatusText(t.status);
+    if (t.executionPool === 'nv12' && (t.status === 'pending' || t.status === 'processing')) {
+        statusText = t.etaString === '等待 NV12 回退' ? '等待深度处理' : '深度处理中';
+    }
     
     // 视频信息（分辨率、帧数、预计时间）
     let videoInfoHtml = '';

@@ -1447,6 +1447,12 @@ body {
     box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
 }
 
+.status-tab-btn[data-status="nv12"].active {
+    background: #0f766e;
+    border-color: #0f766e;
+    box-shadow: 0 2px 4px rgba(15, 118, 110, 0.3);
+}
+
 .status-tab-btn[data-status="success"].active {
     background: var(--success-color);
     border-color: var(--success-color);
