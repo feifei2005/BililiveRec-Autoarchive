@@ -543,8 +543,12 @@ function fillConfigForm(config) {
     document.getElementById('config-ffprobePath').value = config.ffprobePath || '';
     document.getElementById('config-maxConcurrent').value = config.maxConcurrent || 2;
     document.getElementById('config-minFileSizeKB').value = config.minFileSizeKB || 1024;
-    document.getElementById('config-scanIntervalMin').value = config.scanIntervalMin || 5;
-    document.getElementById('config-conflictMode').value = config.conflictMode || 'skip';
+	document.getElementById('config-scanIntervalMin').value = config.scanIntervalMin || 5;
+	document.getElementById('config-stagingMode').value = config.stagingMode || 'move';
+	document.getElementById('config-minDurationSec').value = config.minDurationSec ?? 1;
+	document.getElementById('config-settleSeconds').value = config.settleSeconds ?? 10;
+	document.getElementById('config-orphanGraceMinutes').value = config.orphanGraceMinutes ?? 60;
+	document.getElementById('config-conflictMode').value = config.conflictMode || 'rename';
     document.getElementById('config-pathTemplate').value = config.pathTemplate || '';
     document.getElementById('config-checkVideoStream').checked = config.checkVideoStream || false;
     document.getElementById('config-discardFailedFiles').checked = config.discardFailedFiles || false;
@@ -577,8 +581,12 @@ function getConfigFromForm() {
         ffprobePath: document.getElementById('config-ffprobePath').value.trim(),
         maxConcurrent: parseInt(document.getElementById('config-maxConcurrent').value) || 2,
         minFileSizeKB: parseInt(document.getElementById('config-minFileSizeKB').value) || 1024,
-        scanIntervalMin: parseInt(document.getElementById('config-scanIntervalMin').value) || 5,
-        conflictMode: document.getElementById('config-conflictMode').value || 'skip',
+		scanIntervalMin: parseInt(document.getElementById('config-scanIntervalMin').value) || 5,
+		stagingMode: document.getElementById('config-stagingMode').value || 'move',
+		minDurationSec: parseFloat(document.getElementById('config-minDurationSec').value) || 0,
+		settleSeconds: parseInt(document.getElementById('config-settleSeconds').value) || 0,
+		orphanGraceMinutes: parseInt(document.getElementById('config-orphanGraceMinutes').value) || 0,
+		conflictMode: document.getElementById('config-conflictMode').value || 'rename',
         pathTemplate: document.getElementById('config-pathTemplate').value.trim(),
         checkVideoStream: document.getElementById('config-checkVideoStream').checked,
         discardFailedFiles: document.getElementById('config-discardFailedFiles').checked,

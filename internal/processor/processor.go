@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -108,6 +109,9 @@ type Config struct {
 	DeleteOriginal     bool                    // 处理成功后是否删除原文件
 	ScanInterval       time.Duration           // 扫描间隔
 	Scanner            *scanner.DefaultScanner // Scanner 实例
+	StagingMode        string                  // move: 仅移动；remux: 先转封装
+	MinDurationSec     float64                 // 最小时长，过滤只有几帧的坏片段
+	OrphanGrace        time.Duration           // 孤立伴随文件宽限期
 }
 
 // ConflictMode 文件冲突处理模式
@@ -632,6 +636,9 @@ func (p *DefaultProcessor) runFullScan() error {
 			log.Printf("添加任务失败: %s, 错误: %v", group.FLVPath, err)
 		}
 	}
+	if err := p.cleanupOrphans(); err != nil {
+		log.Printf("清理孤立伴随文件失败: %v", err)
+	}
 
 	return nil
 }
@@ -735,23 +742,19 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 		log.Printf("文件过小（短片段）: %s (大小: %d KB < 最小 %d KB)", group.FLVPath, fileSizeKB, p.config.MinFileSizeKB)
 	}
 
-	// 3.2 检查视频流有效性（即使文件大小合格也需要检查）
-	if !isInvalid && p.config.CheckVideoStream && p.config.FFmpeg != nil {
-		log.Printf("[processor] 开始检查视频流有效性: %s (大小: %d KB)", group.FLVPath, fileSizeKB)
-		hasVideo, err := p.config.FFmpeg.HasVideoStream(ctx, group.FLVPath)
-		log.Printf("[processor] 视频流检查结果: %s, hasVideo=%v, err=%v", group.FLVPath, hasVideo, err)
+	// 3.2 一次 ffprobe 同时检查视频流和时长。只看宽高会漏掉只有几帧的坏片段。
+	if !isInvalid && p.config.FFmpeg != nil && (p.config.CheckVideoStream || p.config.MinDurationSec > 0) {
+		log.Printf("[processor] 开始检查视频有效性: %s (大小: %d KB)", group.FLVPath, fileSizeKB)
+		mediaInfo, err := p.config.FFmpeg.Probe(ctx, group.FLVPath)
 		if err != nil {
-			// 无法检测视频流，可能文件损坏
 			isInvalid = true
-			invalidReason = fmt.Sprintf("failed to check video stream: %v", err)
-			log.Printf("[processor] 视频流检测失败: %s, 错误: %v", group.FLVPath, err)
-		} else if !hasVideo {
-			// 确认无视频流（width 或 height 为 0）
+			invalidReason = fmt.Sprintf("failed to probe media: %v", err)
+		} else if p.config.CheckVideoStream && (mediaInfo.VideoStream == nil || mediaInfo.VideoStream.Width <= 0 || mediaInfo.VideoStream.Height <= 0) {
 			isInvalid = true
 			invalidReason = fmt.Sprintf("no valid video stream detected (file size: %d KB)", fileSizeKB)
-			log.Printf("[processor] 文件无有效视频流: %s (大小: %d KB)", group.FLVPath, fileSizeKB)
-		} else {
-			log.Printf("[processor] 文件视频流有效: %s", group.FLVPath)
+		} else if p.config.MinDurationSec > 0 && mediaInfo.Duration < p.config.MinDurationSec {
+			isInvalid = true
+			invalidReason = fmt.Sprintf("duration %.3fs < minimum %.3fs (short segment)", mediaInfo.Duration, p.config.MinDurationSec)
 		}
 	}
 
@@ -786,8 +789,25 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// 步骤 8: 执行转封装（带进度监控）
-	if p.config.FFmpeg != nil {
+	if p.config.StagingMode == "move" {
+		// 伴随文件先移动，视频最后移动。这样 waiting 中出现视频时，文件组已完整。
+		base := strings.TrimSuffix(finalOutputPath, filepath.Ext(finalOutputPath))
+		if group.XMLPath != "" {
+			stagedXMLPath := base + ".xml"
+			if err := p.moveFile(group.XMLPath, stagedXMLPath); err != nil {
+				return fmt.Errorf("failed to move XML to waiting: %w", err)
+			}
+		}
+		if isCompanionCover(group.FLVPath, group.CoverPath) {
+			stagedCoverPath := base + strings.TrimPrefix(filepath.Base(group.CoverPath), strings.TrimSuffix(filepath.Base(group.FLVPath), filepath.Ext(group.FLVPath)))
+			if err := p.moveFile(group.CoverPath, stagedCoverPath); err != nil {
+				return fmt.Errorf("failed to move cover to waiting: %w", err)
+			}
+		}
+		if err := p.moveFile(group.FLVPath, finalOutputPath); err != nil {
+			return fmt.Errorf("failed to move video to waiting: %w", err)
+		}
+	} else if p.config.FFmpeg != nil {
 		// 启动进度监控
 		p.startRemuxProgressMonitor(fileInfo.Size(), finalOutputPath, group.FLVPath)
 		defer p.stopRemuxProgressMonitor()
@@ -798,14 +818,12 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 		if err := p.config.FFmpeg.Remux(ctx, group.FLVPath, finalOutputPath, opts); err != nil {
 			return fmt.Errorf("failed to remux: %w", err)
 		}
-	}
-
-	// 步骤 9: 处理 XML 文件（如果存在）
-	if group.XMLPath != "" {
-		xmlOutputPath := strings.TrimSuffix(finalOutputPath, filepath.Ext(finalOutputPath)) + ".xml"
-		if err := p.copyFile(group.XMLPath, xmlOutputPath); err != nil {
-			// XML 复制失败不影响主流程，记录日志即可
-			fmt.Printf("Warning: failed to copy XML file: %v\n", err)
+		if group.XMLPath != "" {
+			stagedXMLPath := strings.TrimSuffix(finalOutputPath, filepath.Ext(finalOutputPath)) + ".xml"
+			if err := p.copyFile(group.XMLPath, stagedXMLPath); err != nil {
+				// XML 复制失败不影响主流程，记录日志即可
+				fmt.Printf("Warning: failed to copy XML file: %v\n", err)
+			}
 		}
 	}
 
@@ -819,6 +837,60 @@ func (p *DefaultProcessor) ProcessGroup(group scanner.FileGroup) error {
 	}
 
 	return nil
+}
+
+// cleanupOrphans 只处理超过宽限期、且磁盘上完全不存在同 stem 视频的 XML/封面。
+// 视频是否过小、是否被占用、是否能被 ffprobe 读取，都不会影响这里的关联判断。
+func (p *DefaultProcessor) cleanupOrphans() error {
+	if p.config.InputDir == "" || p.config.DiscardDir == "" {
+		return nil
+	}
+	return filepath.WalkDir(p.config.InputDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		var stem string
+		switch {
+		case strings.HasSuffix(lower, ".cover.jpg"):
+			stem = name[:len(name)-len(".cover.jpg")]
+		case strings.HasSuffix(lower, ".cover.png"):
+			stem = name[:len(name)-len(".cover.png")]
+		case strings.HasSuffix(lower, ".xml"):
+			stem = name[:len(name)-len(".xml")]
+		default:
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || (p.config.OrphanGrace > 0 && time.Since(info.ModTime()) < p.config.OrphanGrace) {
+			return err
+		}
+		for _, ext := range []string{".flv", ".mkv", ".mp4"} {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(path), stem+ext)); err == nil {
+				return nil
+			}
+		}
+		rel, err := filepath.Rel(p.config.InputDir, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		dst := filepath.Join(p.config.DiscardDir, "orphan", rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		log.Printf("移动孤立伴随文件到回收区: %s -> %s", path, dst)
+		return p.moveFile(path, dst)
+	})
+}
+
+func isCompanionCover(videoPath, coverPath string) bool {
+	if coverPath == "" || filepath.Dir(videoPath) != filepath.Dir(coverPath) {
+		return false
+	}
+	stem := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+	name := filepath.Base(coverPath)
+	return name == stem+".cover.jpg" || name == stem+".cover.png"
 }
 
 // discardGroup 丢弃文件组
@@ -857,7 +929,7 @@ func (p *DefaultProcessor) discardGroup(group scanner.FileGroup, reason string) 
 	}
 
 	// 移动封面文件（如果存在）
-	if group.CoverPath != "" {
+	if isCompanionCover(group.FLVPath, group.CoverPath) {
 		coverName := filepath.Base(group.CoverPath)
 		if err := p.moveFile(group.CoverPath, filepath.Join(discardPath, coverName)); err != nil {
 			// 封面移动失败不影响主流程
@@ -883,7 +955,7 @@ func (p *DefaultProcessor) deleteGroup(group scanner.FileGroup) error {
 	}
 
 	// 删除封面文件
-	if group.CoverPath != "" {
+	if isCompanionCover(group.FLVPath, group.CoverPath) {
 		if err := os.Remove(group.CoverPath); err != nil && !os.IsNotExist(err) {
 			fmt.Printf("Warning: failed to delete cover file: %v\n", err)
 		}
@@ -953,8 +1025,11 @@ func (p *DefaultProcessor) buildOutputPath(group scanner.FileGroup) (string, err
 
 	outputDir := buf.String()
 
-	// 构建输出文件名（替换扩展名为 .mkv）
-	outputFileName := strings.TrimSuffix(baseName, filepath.Ext(baseName)) + ".mkv"
+	outputExt := ".mkv"
+	if p.config.StagingMode == "move" {
+		outputExt = filepath.Ext(baseName)
+	}
+	outputFileName := strings.TrimSuffix(baseName, filepath.Ext(baseName)) + outputExt
 	outputPath := filepath.Join(outputDir, outputFileName)
 
 	return outputPath, nil
@@ -1036,8 +1111,18 @@ func (p *DefaultProcessor) moveFile(src, dst string) error {
 		return nil
 	}
 
-	// 重命名失败，可能跨驱动器，使用复制+删除
-	if err := p.copyFile(src, dst); err != nil {
+	// 跨文件系统时先复制为隐藏临时文件，完整关闭后再发布目标名。
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	tmp := filepath.Join(filepath.Dir(dst), fmt.Sprintf(".%s.moving-%d", filepath.Base(dst), os.Getpid()))
+	_ = os.Remove(tmp)
+	if err := p.copyFile(src, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 
@@ -1262,6 +1347,9 @@ func (p *DefaultProcessor) UpdateConfig(cfg Config) {
 	p.config.ConflictMode = cfg.ConflictMode
 	p.config.DefaultCoverPath = cfg.DefaultCoverPath
 	p.config.DeleteOriginal = cfg.DeleteOriginal
+	p.config.StagingMode = cfg.StagingMode
+	p.config.MinDurationSec = cfg.MinDurationSec
+	p.config.OrphanGrace = cfg.OrphanGrace
 
 	// 更新扫描间隔（会在下一次定时扫描时生效）
 	if cfg.ScanInterval > 0 {

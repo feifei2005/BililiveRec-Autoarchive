@@ -29,16 +29,20 @@ type ServerConfig struct {
 
 // ProcessingConfig 录制处理配置
 type ProcessingConfig struct {
-	InputDir           string `yaml:"input_dir"`
-	OutputRoot         string `yaml:"output_root"`
-	DiscardDir         string `yaml:"discard_dir"`
-	MaxConcurrent      int    `yaml:"max_concurrent"`
-	MinFileSizeKB      int64  `yaml:"min_file_size_kb"`
-	CheckVideoStream   bool   `yaml:"check_video_stream"`
-	DiscardFailedFiles bool   `yaml:"discard_failed_files"` // 处理失败时是否进入丢弃流程
-	DeleteOriginal     bool   `yaml:"delete_original"`
-	ConflictMode       string `yaml:"conflict_mode"`
-	ScanIntervalMin    int    `yaml:"scan_interval_min"`
+	InputDir           string  `yaml:"input_dir"`
+	OutputRoot         string  `yaml:"output_root"`
+	DiscardDir         string  `yaml:"discard_dir"`
+	MaxConcurrent      int     `yaml:"max_concurrent"`
+	MinFileSizeKB      int64   `yaml:"min_file_size_kb"`
+	CheckVideoStream   bool    `yaml:"check_video_stream"`
+	DiscardFailedFiles bool    `yaml:"discard_failed_files"` // 处理失败时是否进入丢弃流程
+	DeleteOriginal     bool    `yaml:"delete_original"`
+	ConflictMode       string  `yaml:"conflict_mode"`
+	ScanIntervalMin    int     `yaml:"scan_interval_min"`
+	StagingMode        string  `yaml:"staging_mode"`
+	MinDurationSec     float64 `yaml:"min_duration_sec"`
+	SettleSeconds      int     `yaml:"settle_seconds"`
+	OrphanGraceMinutes int     `yaml:"orphan_grace_minutes"`
 }
 
 // RulesConfig 命名与目录规则配置
@@ -124,8 +128,12 @@ func Default() *Config {
 			CheckVideoStream:   true,
 			DiscardFailedFiles: false, // 默认保留失败文件
 			DeleteOriginal:     false,
-			ConflictMode:       "skip",
+			ConflictMode:       "rename",
 			ScanIntervalMin:    5,
+			StagingMode:        "move",
+			MinDurationSec:     1,
+			SettleSeconds:      10,
+			OrphanGraceMinutes: 60,
 		},
 		Rules: RulesConfig{
 			StreamerNameRegex: "-([^\\-]+)",
@@ -199,6 +207,18 @@ func (c *Config) FillDefaults() {
 	}
 	if c.Processing.ScanIntervalMin <= 0 {
 		c.Processing.ScanIntervalMin = defaults.Processing.ScanIntervalMin
+	}
+	if c.Processing.StagingMode != "move" && c.Processing.StagingMode != "remux" {
+		c.Processing.StagingMode = defaults.Processing.StagingMode
+	}
+	if c.Processing.MinDurationSec < 0 {
+		c.Processing.MinDurationSec = defaults.Processing.MinDurationSec
+	}
+	if c.Processing.SettleSeconds < 0 {
+		c.Processing.SettleSeconds = defaults.Processing.SettleSeconds
+	}
+	if c.Processing.OrphanGraceMinutes < 0 {
+		c.Processing.OrphanGraceMinutes = defaults.Processing.OrphanGraceMinutes
 	}
 
 	// 补全 FFmpeg 配置

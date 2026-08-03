@@ -39,16 +39,23 @@ graph TD
         TQ --> WP[工作协程池]
     end
 
-    subgraph "处理层 (Processor)"
+    subgraph "整理层 (Processor)"
         WP --> FD[文件占用检测]
         FD --> FV[文件校验 ffprobe/size]
         FV --> FM[文件匹配与分组]
-        FM --> FR[FFmpeg 转封装引擎]
+        FM --> SG[移动整个文件组到 waiting]
+    end
+
+    subgraph "Intel 转码层"
+        SG --> QSV[QSV 主转码池]
+        QSV -- 分辨率变化错误 --> NV12[独立单并发 NV12 池]
+        QSV -- 成功 --> PUB[原子发布]
+        NV12 -- 成功 --> PUB
     end
 
     subgraph "持久化与配置 (Storage & Config)"
-        FR --> DB[(SQLite: 历史/日志)]
-        FR --> CFG[YAML 配置文件]
+        PUB --> DB[(SQLite: 历史/日志)]
+        PUB --> CFG[YAML 配置文件]
     end
 
     subgraph "展示层 (UI)"
@@ -56,8 +63,8 @@ graph TD
         TRAY[系统托盘] <--> GUI
     end
 
-    FR -- 成功 --> OP[输出目录结构]
-    FR -- 失败 --> EL[错误列表/丢弃目录]
+    PUB --> OP[output 成品仓库]
+    FV -- 无效 --> EL[discard 回收区]
 ```
 
 ---
@@ -75,7 +82,10 @@ graph TD
     2.  若无，查询 SQLite 中该主播最近一次使用的封面。
     3.  若无，使用全局默认封面。
     4.  若无，不写入封面。
-*   **转封装**：执行 `ffmpeg -i input.flv -i cover.jpg -map 0 -map 1 -c copy -disposition:v:1 attached_pic output.mkv`。
+*   **整理模式**：默认 `move`，只移动 FLV/XML/封面到 waiting；兼容模式 `remux` 才预先生成 MKV。整理器到此即结束，不直接调用转码器。
+*   **目录解耦**：转码调度器独立扫描 waiting；发布步骤只接收 FFmpeg 已关闭的临时文件。每一阶段以文件系统为契约，重启后不需要恢复上游内存状态。
+*   **转码与封面**：正式 Intel QSV 转码时直接把外部封面映射为 `attached_pic`，不再为封面单独写一遍完整视频。
+*   **安全发布**：FFmpeg 始终写 waiting 内的隐藏临时文件；成功关闭后才改名或跨盘复制并改名到 output。
 
 ### 3.3 Webhook 服务器
 *   **接口**：监听指定端口（如 8080），接收 POST 请求。
@@ -130,10 +140,11 @@ ffmpeg:
 3.  **检测**：Worker 尝试以读写模式打开文件，若失败（被占用）则等待并重试。
 4.  **校验**：调用 `ffprobe` 检查是否有视频流，检查文件大小。
 5.  **匹配**：搜索同目录下匹配的 XML 和图片。
-6.  **执行**：启动 FFmpeg 子进程进行转封装。
+6.  **整理**：默认把完整文件组移动到 waiting，并加入转码队列。
 7.  **归档**：
-    *   成功：移动 MKV 到目标目录，移动 XML，删除原 FLV。
-    *   失败：记录错误日志，保留原文件或移至丢弃目录。
+    *   成功：在 waiting 完成 Intel QSV 转码，再原子发布视频和 XML 到 output，清理 waiting 源文件和外部封面。
+    *   QSV 分辨率变化失败：整条任务进入独立单并发 NV12 池，仍使用 Intel QSV 编解码。
+    *   失败：记录错误日志，源视频、XML 和封面保留在 waiting，供重试。
 
 ---
 

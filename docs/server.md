@@ -2,6 +2,8 @@
 
 `server` 是无桌面依赖的 Go HTTP 服务，包含浏览器管理页、录播姬 Webhook、自动扫描归档、SQLite 处理记录和 Intel QSV 转码。主转码池按配置并发执行；遇到分辨率变化引发的 QSV 滤镜重初始化失败时，任务会移交到独立的单并发 NV12 池，不占用主池 worker。
 
+默认自动流水线为 `rec → waiting → output`：录制组先仅移动到 waiting，封面在正式转码时嵌入；转码临时输出也位于 waiting，成功后才原子发布到 output。各阶段只扫描和修改自己负责的文件目录，不调用上下游内部状态。`processing.staging_mode: remux` 可恢复旧式“先转封装、再转码”。
+
 完整的文件上传、端口配置、systemd 和升级步骤见 [Linux Server 部署指南](server-deployment.md)。
 
 ## 运行依赖
@@ -39,7 +41,7 @@ ls -l /dev/dri
 
 ## 配置和启动
 
-以 `configs/server.example.yaml` 为模板创建 `server.yaml`，至少检查输入目录、输出目录、监听地址和 API Token。外部访问需要将 `bind_address` 设为 `0.0.0.0` 或指定网卡地址，并在防火墙中放行端口。
+以 `configs/server.example.yaml` 为模板创建 `server.yaml`，至少检查 `./rec`、`./waiting`、`./output`、监听地址和 API Token。外部访问需要将 `bind_address` 设为 `0.0.0.0` 或指定网卡地址，并在防火墙中放行端口。
 
 ```bash
 chmod +x server

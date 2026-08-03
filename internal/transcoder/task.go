@@ -18,22 +18,23 @@ const (
 
 // TranscodeTask 转码任务
 type TranscodeTask struct {
-	ID            string          `json:"id"`            // 任务ID
-	SeqNum        int64           `json:"seqNum"`        // 任务序号，用于排序（按添加顺序）
-	InputPath     string          `json:"inputFile"`     // 输入文件路径
-	OutputPath    string          `json:"outputPath"`    // 输出文件路径
-	Config        TranscodeConfig `json:"config"`        // 转码配置
-	Status        TaskStatus      `json:"status"`        // 任务状态
-	ExecutionPool string          `json:"executionPool"` // 当前执行池：main 或 nv12
-	Progress      float64         `json:"progress"`      // 进度 (0-100)，基于已处理帧数/总帧数
-	Duration      float64         `json:"duration"`      // 视频总时长（秒）
-	CurrentTime   float64         `json:"currentTime"`   // 当前处理时间（秒）
-	Speed         string          `json:"speed"`         // 处理速度字符串（如 "1.5x"）
-	Error         string          `json:"error"`         // 错误信息（包含 FFmpeg 详细输出）
-	ErrorLogPath  string          `json:"errorLogPath"`  // 错误日志文件路径（失败时生成）
-	CreatedAt     time.Time       `json:"createdAt"`     // 创建时间
-	StartedAt     time.Time       `json:"startedAt"`     // 开始时间
-	CompletedAt   time.Time       `json:"completedAt"`   // 完成时间
+	ID                string          `json:"id"`            // 任务ID
+	SeqNum            int64           `json:"seqNum"`        // 任务序号，用于排序（按添加顺序）
+	InputPath         string          `json:"inputFile"`     // 输入文件路径
+	OutputPath        string          `json:"outputPath"`    // 输出文件路径
+	WorkingOutputPath string          `json:"-"`             // waiting 内的转码临时文件
+	Config            TranscodeConfig `json:"config"`        // 转码配置
+	Status            TaskStatus      `json:"status"`        // 任务状态
+	ExecutionPool     string          `json:"executionPool"` // 当前执行池：main 或 nv12
+	Progress          float64         `json:"progress"`      // 进度 (0-100)，基于已处理帧数/总帧数
+	Duration          float64         `json:"duration"`      // 视频总时长（秒）
+	CurrentTime       float64         `json:"currentTime"`   // 当前处理时间（秒）
+	Speed             string          `json:"speed"`         // 处理速度字符串（如 "1.5x"）
+	Error             string          `json:"error"`         // 错误信息（包含 FFmpeg 详细输出）
+	ErrorLogPath      string          `json:"errorLogPath"`  // 错误日志文件路径（失败时生成）
+	CreatedAt         time.Time       `json:"createdAt"`     // 创建时间
+	StartedAt         time.Time       `json:"startedAt"`     // 开始时间
+	CompletedAt       time.Time       `json:"completedAt"`   // 完成时间
 
 	// 已用时间
 	ElapsedSeconds float64 `json:"elapsedSeconds"` // 已用时间（秒）
@@ -86,6 +87,13 @@ type TranscodeConfig struct {
 	// 当源视频帧率高于此值时，会应用 fps 过滤器降低帧率
 	// 无论此值为多少，均会启用可变帧率（VFR）模式
 	MaxFPS float64 `json:"max_fps" yaml:"max_fps"`
+
+	// 以下字段用于自动流水线，不通过 Web API 暴露。
+	ExplicitOutputPath           string `json:"-" yaml:"-"`
+	ExternalCoverPath            string `json:"-" yaml:"-"`
+	SidecarXMLPath               string `json:"-" yaml:"-"`
+	PublishAfterSuccess          bool   `json:"-" yaml:"-"`
+	DeleteExternalCoverOnSuccess bool   `json:"-" yaml:"-"`
 }
 
 // VideoFile 扫描到的视频文件信息

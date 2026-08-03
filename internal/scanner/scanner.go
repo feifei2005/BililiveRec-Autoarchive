@@ -55,6 +55,7 @@ type Config struct {
 	ScanInterval  time.Duration // 扫描间隔
 	MinFileSize   int64         // 最小文件大小（字节）
 	IgnorePattern string        // 忽略的文件名模式
+	SettleTime    time.Duration // 文件最后修改后至少等待这么久
 }
 
 // DefaultScanner 默认文件扫描器实现
@@ -205,8 +206,8 @@ func (s *DefaultScanner) scanStreamerFolder(folderPath, streamerDir, streamerNam
 			continue
 		}
 
-		if s.config.MinFileSize > 0 && info.Size() < s.config.MinFileSize {
-			// 文件太小，跳过
+		if s.config.SettleTime > 0 && time.Since(info.ModTime()) < s.config.SettleTime {
+			// 录播姬可能刚关闭视频，XML/封面仍在收尾，留到下次扫描。
 			continue
 		}
 
@@ -232,15 +233,20 @@ func (s *DefaultScanner) scanStreamerFolder(folderPath, streamerDir, streamerNam
 		xmlName := baseName + ".xml"
 		if _, exists := fileMap[xmlName]; exists {
 			xmlPath := filepath.Join(folderPath, xmlName)
-			// 也检查 XML 文件是否被占用
-			if !isFileLocked(xmlPath) {
-				group.XMLPath = xmlPath
+			if isFileLocked(xmlPath) {
+				log.Printf("[SCANNER] XML 仍被占用，整个文件组留到下次: %s", xmlPath)
+				continue
 			}
+			group.XMLPath = xmlPath
 		}
 
 		// 查找匹配的封面文件（.cover.jpg 或 .cover.png）
 		coverPath := findCoverFile(folderPath, baseName, fileMap)
-		if coverPath != "" && !isFileLocked(coverPath) {
+		if coverPath != "" {
+			if isFileLocked(coverPath) {
+				log.Printf("[SCANNER] 封面仍被占用，整个文件组留到下次: %s", coverPath)
+				continue
+			}
 			group.CoverPath = coverPath
 		}
 

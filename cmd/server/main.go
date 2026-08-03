@@ -74,7 +74,7 @@ func main() {
 	fileScanner := scanner.New(scanner.Config{
 		InputDirFunc: func() string { return cfg.Processing.InputDir },
 		Extensions:   []string{".flv"},
-		MinFileSize:  cfg.Processing.MinFileSizeKB * 1024,
+		SettleTime:   time.Duration(cfg.Processing.SettleSeconds) * time.Second,
 	})
 	archiveProcessor, err := processor.New(processor.Config{
 		MaxConcurrent: cfg.Processing.MaxConcurrent, InputDir: cfg.Processing.InputDir,
@@ -84,6 +84,8 @@ func main() {
 		ConflictMode: processor.ConflictMode(cfg.Processing.ConflictMode), DeleteOriginal: cfg.Processing.DeleteOriginal,
 		FFmpeg: media, Storage: store, DefaultCoverPath: cfg.Covers.DefaultCover,
 		Scanner: fileScanner, ScanInterval: time.Duration(cfg.Processing.ScanIntervalMin) * time.Minute,
+		StagingMode: cfg.Processing.StagingMode, MinDurationSec: cfg.Processing.MinDurationSec,
+		OrphanGrace: time.Duration(cfg.Processing.OrphanGraceMinutes) * time.Minute,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -95,6 +97,31 @@ func main() {
 		MaxWorkers: cfg.Transcode.MaxConcurrent,
 	})
 	tc.SetQSVReinitStrategy(transcoder.QSVReinitStrategy(cfg.Transcode.QSVReinitStrategy))
+	taskConfig := transcoder.TranscodeConfig{
+		InputArgs: cfg.Transcode.InputArgs, QSVReinitStrategy: cfg.Transcode.QSVReinitStrategy,
+		CustomArgs: cfg.Transcode.DefaultParams, OutputDir: cfg.Transcode.OutputDir,
+		OutputExt: normalizeOutputExt(cfg.Transcode.DefaultFormat), MaxFPS: cfg.Transcode.MaxFPS,
+		DeleteSourceOnSuccess: true, PublishAfterSuccess: true,
+	}
+	enqueueWaiting := func(group waitingGroup) error {
+		finalPath, err := finalOutputPath(cfg.Processing.OutputRoot, cfg.Transcode.OutputDir, group.VideoPath, taskConfig.OutputExt, cfg.Processing.ConflictMode)
+		if err != nil {
+			return err
+		}
+		jobConfig := taskConfig
+		jobConfig.ExplicitOutputPath = finalPath
+		companionCover := group.CoverPath != ""
+		if group.CoverPath == "" {
+			if _, statErr := os.Stat(cfg.Covers.DefaultCover); cfg.Covers.DefaultCover != "" && statErr == nil {
+				group.CoverPath = cfg.Covers.DefaultCover
+			}
+		}
+		jobConfig.ExternalCoverPath = group.CoverPath
+		jobConfig.SidecarXMLPath = group.XMLPath
+		jobConfig.DeleteExternalCoverOnSuccess = companionCover
+		_, err = tc.AddTask(group.VideoPath, jobConfig)
+		return err
+	}
 	tc.SetProcessLogCallback(func(entry transcoder.ProcessLogEntry) {
 		if err := store.LogProcessResult(storage.ProcessLog{
 			TaskID: entry.TaskID, InputPath: entry.InputPath, OutputPath: entry.OutputPath,
@@ -106,14 +133,31 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := archiveProcessor.Start(ctx); err != nil {
-		_ = store.Close()
-		log.Fatalf("start archive processor: %v", err)
-	}
 	if err := tc.Start(ctx); err != nil {
-		_ = archiveProcessor.Stop()
 		_ = store.Close()
 		log.Fatalf("start transcoder: %v", err)
+	}
+	if err := scanWaiting(cfg.Processing.OutputRoot, enqueueWaiting); err != nil {
+		log.Printf("recover waiting tasks: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := scanWaiting(cfg.Processing.OutputRoot, enqueueWaiting); err != nil {
+					log.Printf("scan waiting: %v", err)
+				}
+			}
+		}
+	}()
+	if err := archiveProcessor.Start(ctx); err != nil {
+		_ = tc.Stop()
+		_ = store.Close()
+		log.Fatalf("start archive processor: %v", err)
 	}
 
 	appState := app.NewApp()
@@ -151,12 +195,6 @@ func main() {
 		}()
 	})
 
-	taskConfig := transcoder.TranscodeConfig{
-		InputArgs: cfg.Transcode.InputArgs, QSVReinitStrategy: cfg.Transcode.QSVReinitStrategy,
-		CustomArgs: cfg.Transcode.DefaultParams, OutputDir: cfg.Transcode.OutputDir,
-		OutputExt: normalizeOutputExt(cfg.Transcode.DefaultFormat), MaxFPS: cfg.Transcode.MaxFPS,
-		DeleteSourceOnSuccess: cfg.Transcode.DeleteSourceOnSuccess,
-	}
 	httpServer := webhook.New(webhook.Config{
 		BindAddress: cfg.Server.BindAddress, APIToken: cfg.Server.APIToken,
 		Port: cfg.Server.Port, WebhookPath: cfg.Server.WebhookPath,
@@ -228,4 +266,78 @@ func normalizeOutputExt(format string) string {
 		return format
 	}
 	return "." + format
+}
+
+func finalOutputPath(waitingRoot, outputRoot, inputPath, outputExt, conflictMode string) (string, error) {
+	if waitingRoot == "" || outputRoot == "" {
+		return "", fmt.Errorf("processing.output_root 和 transcode.output_dir 都必须配置")
+	}
+	waitingAbs, err := filepath.Abs(waitingRoot)
+	if err != nil {
+		return "", err
+	}
+	inputAbs, err := filepath.Abs(inputPath)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(waitingAbs, inputAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("waiting 文件不在 processing.output_root 内: %s", inputPath)
+	}
+	rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + outputExt
+	finalPath := filepath.Join(outputRoot, rel)
+	if _, err := os.Stat(finalPath); os.IsNotExist(err) || conflictMode == "overwrite" {
+		return finalPath, nil
+	}
+	if conflictMode == "skip" {
+		return "", fmt.Errorf("output 已存在（conflict_mode=skip）: %s", finalPath)
+	}
+	ext := filepath.Ext(finalPath)
+	base := strings.TrimSuffix(finalPath, ext)
+	for i := 1; i < 10000; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("无法为 output 生成无冲突文件名: %s", finalPath)
+}
+
+type waitingGroup struct {
+	VideoPath string
+	XMLPath   string
+	CoverPath string
+}
+
+// scanWaiting 是独立的文件消费者，只依赖 waiting 中已经落盘的文件。
+func scanWaiting(waitingRoot string, enqueue func(waitingGroup) error) error {
+	if waitingRoot == "" {
+		return nil
+	}
+	return filepath.WalkDir(waitingRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if ext != ".flv" && ext != ".mkv" {
+			return nil
+		}
+		base := strings.TrimSuffix(path, filepath.Ext(path))
+		group := waitingGroup{VideoPath: path}
+		if _, err := os.Stat(base + ".xml"); err == nil {
+			group.XMLPath = base + ".xml"
+		}
+		if _, err := os.Stat(base + ".cover.jpg"); err == nil {
+			group.CoverPath = base + ".cover.jpg"
+		} else if _, err := os.Stat(base + ".cover.png"); err == nil {
+			group.CoverPath = base + ".cover.png"
+		}
+		if err := enqueue(group); err != nil {
+			log.Printf("恢复 waiting 文件失败 %s: %v", path, err)
+		}
+		return nil
+	})
 }

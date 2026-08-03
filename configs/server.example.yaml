@@ -6,14 +6,20 @@ server:
   webhook_enabled: true
 
 processing:
-  input_dir: "/data/input"
-  output_root: "/data/output"
+  # 都相对于 server 的工作目录。rec 也应配置为录播姬的录制目录。
+  input_dir: "./rec"
+  output_root: "./waiting"
+  discard_dir: "./discard"
   max_concurrent: 1
   min_file_size_kb: 1024
+  min_duration_sec: 1
   check_video_stream: true
+  staging_mode: "move"
+  settle_seconds: 10
+  orphan_grace_minutes: 60
   discard_failed_files: false
   delete_original: false
-  conflict_mode: "skip"
+  conflict_mode: "rename"
   scan_interval_min: 5
 
 rules:
@@ -29,8 +35,8 @@ transcode:
   default_params: "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k"
   input_args: "-hwaccel qsv -hwaccel_output_format qsv"
   max_concurrent: 1
-  output_dir: "/data/output"
+  output_dir: "./output"
   max_fps: 0
   preserve_cover: true
-  delete_source_on_success: false
+  delete_source_on_success: true
   qsv_reinit_strategy: "nv12"

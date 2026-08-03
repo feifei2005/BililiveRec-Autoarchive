@@ -119,6 +119,10 @@ type ConfigData struct {
 	DeleteOriginal     bool     `json:"deleteOriginal"`     // 处理成功后删除原文件
 	ConflictMode       string   `json:"conflictMode"`       // 文件冲突处理模式
 	ScanIntervalMin    int      `json:"scanIntervalMin"`    // 定时扫描间隔（分钟）
+	StagingMode        string   `json:"stagingMode"`
+	MinDurationSec     float64  `json:"minDurationSec"`
+	SettleSeconds      int      `json:"settleSeconds"`
+	OrphanGraceMinutes int      `json:"orphanGraceMinutes"`
 	ServerPort         int      `json:"serverPort"`
 	WebhookPath        string   `json:"webhookPath"`
 	WebhookEnabled     bool     `json:"webhookEnabled"` // 是否启用 Webhook 自动添加任务
@@ -148,6 +152,10 @@ func (a *App) GetConfig() ConfigData {
 		DeleteOriginal:     a.config.Processing.DeleteOriginal,
 		ConflictMode:       a.config.Processing.ConflictMode,
 		ScanIntervalMin:    a.config.Processing.ScanIntervalMin,
+		StagingMode:        a.config.Processing.StagingMode,
+		MinDurationSec:     a.config.Processing.MinDurationSec,
+		SettleSeconds:      a.config.Processing.SettleSeconds,
+		OrphanGraceMinutes: a.config.Processing.OrphanGraceMinutes,
 		ServerPort:         a.config.Server.Port,
 		WebhookPath:        a.config.Server.WebhookPath,
 		WebhookEnabled:     a.config.Server.WebhookEnabled,
@@ -178,6 +186,10 @@ func (a *App) SaveConfig(data ConfigData) error {
 	a.config.Processing.DeleteOriginal = data.DeleteOriginal
 	a.config.Processing.ConflictMode = data.ConflictMode
 	a.config.Processing.ScanIntervalMin = data.ScanIntervalMin
+	a.config.Processing.StagingMode = data.StagingMode
+	a.config.Processing.MinDurationSec = data.MinDurationSec
+	a.config.Processing.SettleSeconds = data.SettleSeconds
+	a.config.Processing.OrphanGraceMinutes = data.OrphanGraceMinutes
 	a.config.Server.Port = data.ServerPort
 	a.config.Server.WebhookPath = data.WebhookPath
 	a.config.Server.WebhookEnabled = data.WebhookEnabled
@@ -209,6 +221,9 @@ func (a *App) SaveConfig(data ConfigData) error {
 			DefaultCoverPath:   data.DefaultCover,
 			DeleteOriginal:     data.DeleteOriginal,
 			ScanInterval:       time.Duration(data.ScanIntervalMin) * time.Minute,
+			StagingMode:        data.StagingMode,
+			MinDurationSec:     data.MinDurationSec,
+			OrphanGrace:        time.Duration(data.OrphanGraceMinutes) * time.Minute,
 		}
 		a.processor.UpdateConfig(processorConfig)
 		log.Println("处理器配置已热更新")

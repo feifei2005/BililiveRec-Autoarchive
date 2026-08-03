@@ -12,8 +12,8 @@ server:
 
 # 录制处理设置
 processing:
-  input_dir: "C:\\Videos\\Recordings"       # 录制文件输入目录（录播姬工作目录）
-  output_root: "D:\\Archive\\Bilibili"      # 整理后的输出根目录
+  input_dir: ".\\rec"                         # 录播姬录制目录
+  output_root: ".\\waiting"                   # 缓冲区，也是转码工作目录
   
   # 无效文件处理（回收站机制）
   # - 配置了目录：无效文件会被移动到该目录（按主播名分子目录）
@@ -29,6 +29,7 @@ processing:
   # 小于此值的文件会被直接丢弃（不进行视频流检测）
   # 设为 0 则禁用此过滤
   min_file_size_kb: 1024
+  min_duration_sec: 1                         # 过滤只有几帧/几十帧的连接错误片段
   
   # 条件2: 视频流有效性检测（解决 0 字节 MKV 问题）
   # 开启后，会在转封装前使用 ffprobe 检查文件是否包含有效视频流
@@ -37,8 +38,11 @@ processing:
   check_video_stream: true
   
   delete_original: false                    # 处理成功后是否删除原文件
-  conflict_mode: "skip"                     # 文件名冲突处理模式：skip（跳过）、overwrite（覆盖）、rename（重命名）
+  conflict_mode: "rename"                   # 文件名冲突处理模式：skip（跳过）、overwrite（覆盖）、rename（重命名）
   scan_interval_min: 5                      # 定时扫描间隔（分钟）
+  staging_mode: "move"                     # move=仅移动；remux=保留旧式预转封装
+  settle_seconds: 10                        # 文件关闭后等待伴随文件落稳
+  orphan_grace_minutes: 60                  # 无同 stem 视频的伴随文件宽限期
   
   # 处理失败的文件处理方式
   # - false（默认）：保持原位，失败文件保留在原目录

@@ -660,12 +660,29 @@ func parseFrameRate(frameRateStr string) float64 {
 // AddTask 添加转码任务
 func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*TranscodeTask, error) {
 	// 检查输入文件是否存在
-	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+	inputInfo, err := os.Stat(inputPath)
+	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("输入文件不存在: %s", inputPath)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("无法读取输入文件: %w", err)
+	}
+	taskID := generateTaskID(inputPath)
+	t.mu.RLock()
+	existing := t.tasks[taskID]
+	t.mu.RUnlock()
+	if existing != nil && (existing.Status == StatusPending || existing.Status == StatusProcessing) {
+		return existing, nil
+	}
+	if existing != nil && !inputInfo.ModTime().After(existing.CompletedAt) {
+		return existing, nil
 	}
 
 	// 生成输出路径
-	outputPath := t.buildOutputPath(inputPath, config)
+	outputPath := config.ExplicitOutputPath
+	if outputPath == "" {
+		outputPath = t.buildOutputPath(inputPath, config)
+	}
 
 	// 获取视频信息
 	videoInfo, err := t.probeVideo(inputPath)
@@ -680,7 +697,7 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 	t.mu.Unlock()
 
 	task := &TranscodeTask{
-		ID:            generateTaskID(inputPath),
+		ID:            taskID,
 		SeqNum:        seqNum,
 		InputPath:     inputPath,
 		OutputPath:    outputPath,
@@ -689,6 +706,12 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		ExecutionPool: "main",
 		Progress:      0,
 		CreatedAt:     time.Now(),
+	}
+	if config.PublishAfterSuccess {
+		ext := filepath.Ext(outputPath)
+		task.WorkingOutputPath = filepath.Join(filepath.Dir(inputPath), "."+strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))+".transcoding-"+task.ID+ext)
+	} else {
+		task.WorkingOutputPath = outputPath
 	}
 
 	// 设置完整的视频元数据，用于全局剩余时间估算
@@ -810,8 +833,8 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 	t.mu.Unlock()
 
 	// 确保输出目录存在
-	if task.OutputPath != "" {
-		if err := os.MkdirAll(filepath.Dir(task.OutputPath), 0755); err != nil {
+	if task.WorkingOutputPath != "" {
+		if err := os.MkdirAll(filepath.Dir(task.WorkingOutputPath), 0755); err != nil {
 			t.failTask(task, fmt.Errorf("创建输出目录失败: %w", err))
 			return
 		}
@@ -889,6 +912,10 @@ func (t *Transcoder) processTask(task *TranscodeTask) {
 		}
 	}
 
+	if err := t.publishTaskOutput(task); err != nil {
+		t.failTask(task, err)
+		return
+	}
 	t.completeTask(task)
 }
 
@@ -942,6 +969,10 @@ func (t *Transcoder) processNV12Fallback(job nv12FallbackJob) {
 		return
 	}
 
+	if err := t.publishTaskOutput(job.task); err != nil {
+		t.failTask(job.task, err)
+		return
+	}
 	t.completeTask(job.task)
 }
 
@@ -986,7 +1017,7 @@ func (t *Transcoder) completeTask(task *TranscodeTask) {
 	log.Printf("[transcoder] 任务完成: %s -> %s", task.InputPath, task.OutputPath)
 
 	// 转码成功后删除源文件（如果配置了该选项）
-	if task.Config.DeleteSourceOnSuccess {
+	if task.Config.DeleteSourceOnSuccess && !task.Config.PublishAfterSuccess {
 		if err := os.Remove(task.InputPath); err != nil {
 			log.Printf("[transcoder] 警告: 删除源文件失败: %s, 错误: %v", task.InputPath, err)
 		} else {
@@ -995,8 +1026,77 @@ func (t *Transcoder) completeTask(task *TranscodeTask) {
 	}
 }
 
+// publishTaskOutput 保证 output 中只出现已经关闭并完整写好的文件。
+// 同文件系统直接 rename；跨文件系统先复制为隐藏临时文件，再 rename 发布。
+func (t *Transcoder) publishTaskOutput(task *TranscodeTask) error {
+	if !task.Config.PublishAfterSuccess || task.WorkingOutputPath == task.OutputPath {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(task.OutputPath), 0755); err != nil {
+		return fmt.Errorf("创建最终输出目录失败: %w", err)
+	}
+	if err := os.Rename(task.WorkingOutputPath, task.OutputPath); err != nil {
+		tmp := filepath.Join(filepath.Dir(task.OutputPath), "."+filepath.Base(task.OutputPath)+".publishing-"+task.ID)
+		_ = os.Remove(tmp)
+		if copyErr := copyFileContents(task.WorkingOutputPath, tmp); copyErr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("复制转码结果到最终磁盘失败: %w", copyErr)
+		}
+		if renameErr := os.Rename(tmp, task.OutputPath); renameErr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("发布最终输出失败: %w", renameErr)
+		}
+		if removeErr := os.Remove(task.WorkingOutputPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			log.Printf("[transcoder] 警告: 删除 waiting 临时输出失败: %v", removeErr)
+		}
+	}
+
+	if task.Config.SidecarXMLPath != "" {
+		xmlOutput := strings.TrimSuffix(task.OutputPath, filepath.Ext(task.OutputPath)) + ".xml"
+		xmlTmp := filepath.Join(filepath.Dir(xmlOutput), "."+filepath.Base(xmlOutput)+".publishing-"+task.ID)
+		if err := copyFileContents(task.Config.SidecarXMLPath, xmlTmp); err != nil {
+			return fmt.Errorf("发布 XML 失败: %w", err)
+		}
+		if err := os.Rename(xmlTmp, xmlOutput); err != nil {
+			_ = os.Remove(xmlTmp)
+			return fmt.Errorf("发布 XML 失败: %w", err)
+		}
+		_ = os.Remove(task.Config.SidecarXMLPath)
+	}
+	if task.Config.DeleteExternalCoverOnSuccess && task.Config.ExternalCoverPath != "" {
+		_ = os.Remove(task.Config.ExternalCoverPath)
+	}
+	if task.Config.DeleteSourceOnSuccess {
+		_ = os.Remove(task.InputPath)
+	}
+	return nil
+}
+
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err == nil {
+		err = out.Sync()
+	}
+	closeErr := out.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
 // failTask 标记任务失败并写入错误日志文件
 func (t *Transcoder) failTask(task *TranscodeTask, err error) {
+	if task.WorkingOutputPath != "" && task.WorkingOutputPath != task.OutputPath {
+		_ = os.Remove(task.WorkingOutputPath)
+	}
 	t.mu.Lock()
 	if task.Status == StatusCancelled {
 		t.mu.Unlock()
@@ -1110,6 +1210,9 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 	}
 
 	args = append(args, "-i", task.InputPath)
+	if task.Config.ExternalCoverPath != "" {
+		args = append(args, "-i", task.Config.ExternalCoverPath)
+	}
 
 	hasCover := videoInfo != nil && videoInfo.HasCover && videoInfo.CoverIndex >= 0
 
@@ -1120,7 +1223,11 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		customArgs = mergeVideoFilter(customArgs, fpsFilter)
 	}
 
-	if hasCover {
+	if task.Config.ExternalCoverPath != "" {
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0?", "-map", "1:v:0")
+		args = append(args, normalizeVideoStreamSelectors(customArgs)...)
+		args = append(args, "-c:v:1", "copy", "-disposition:v:1", "attached_pic")
+	} else if hasCover {
 		// 源文件包含封面流：将封面流一并映射到输出
 		if videoInfo.VideoIndex >= 0 {
 			args = append(args, "-map", fmt.Sprintf("0:%d", videoInfo.VideoIndex))
@@ -1148,7 +1255,11 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		args = append(args, customArgs...)
 	}
 
-	args = append(args, task.OutputPath)
+	outputPath := task.WorkingOutputPath
+	if outputPath == "" {
+		outputPath = task.OutputPath
+	}
+	args = append(args, outputPath)
 
 	// 不使用 -progress pipe:1，改为直接解析 stderr 输出
 	return args
