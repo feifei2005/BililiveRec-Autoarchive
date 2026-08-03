@@ -101,7 +101,7 @@ func main() {
 		InputArgs: cfg.Transcode.InputArgs, QSVReinitStrategy: cfg.Transcode.QSVReinitStrategy,
 		CustomArgs: cfg.Transcode.DefaultParams, OutputDir: cfg.Transcode.OutputDir,
 		OutputExt: normalizeOutputExt(cfg.Transcode.DefaultFormat), MaxFPS: cfg.Transcode.MaxFPS,
-		DeleteSourceOnSuccess: true, PublishAfterSuccess: true,
+		DeleteSourceOnSuccess: true, PublishAfterSuccess: true, PreserveCover: cfg.Transcode.PreserveCover,
 	}
 	enqueueWaiting := func(group waitingGroup) error {
 		finalPath, err := finalOutputPath(cfg.Processing.OutputRoot, cfg.Transcode.OutputDir, group.VideoPath, taskConfig.OutputExt, cfg.Processing.ConflictMode)

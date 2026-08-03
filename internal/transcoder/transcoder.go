@@ -246,11 +246,37 @@ func (t *Transcoder) Start(ctx context.Context) error {
 	}
 	t.wg.Add(1)
 	go t.nv12FallbackWorker()
+	t.wg.Add(1)
+	go t.workerSupervisor()
 	t.workersMu.Unlock()
 
 	log.Printf("[transcoder] 启动转码器，主池并发数: %d，NV12 回退池并发数: 1", workerCount)
 
 	return nil
+}
+
+// workerSupervisor 修复动态扩缩容竞态或异常退出造成的“队列有任务但 worker 为 0”。
+// 它只维护目标数量，不参与任务调度。
+func (t *Transcoder) workerSupervisor() {
+	defer t.wg.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-ticker.C:
+			t.workersMu.Lock()
+			if t.workersStarted && t.activeWorkers < t.targetWorkers {
+				missing := t.targetWorkers - t.activeWorkers
+				for i := 0; i < missing; i++ {
+					t.startWorkerLocked()
+				}
+				log.Printf("[transcoder] worker 数量不足，已自动补充 %d 个", missing)
+			}
+			t.workersMu.Unlock()
+		}
+	}
 }
 
 // Stop 停止转码器
@@ -386,15 +412,17 @@ func (t *Transcoder) nv12FallbackWorker() {
 
 // generateTaskID 生成任务ID
 func generateTaskID(path string) string {
-	hash := md5.Sum([]byte(path + time.Now().String()))
+	hash := md5.Sum([]byte(filepath.Clean(path)))
 	return hex.EncodeToString(hash[:8])
 }
 
 // ScanFolder 扫描文件夹中的视频文件（并发扫描优化）
-// 只扫描 MKV 文件
+// 扫描 waiting 和手工导入常见的视频容器。
 func (t *Transcoder) ScanFolder(folderPath string) ([]VideoFile, error) {
 	videoExtensions := map[string]bool{
 		".mkv": true,
+		".flv": true,
+		".mp4": true,
 	}
 
 	// 第一步：收集所有视频文件路径
@@ -468,6 +496,8 @@ func (t *Transcoder) ScanFolder(folderPath string) ([]VideoFile, error) {
 func (t *Transcoder) ScanPath(path string) ([]VideoFile, error) {
 	videoExtensions := map[string]bool{
 		".mkv": true,
+		".flv": true,
+		".mp4": true,
 	}
 
 	info, err := os.Stat(path)
@@ -595,10 +625,9 @@ func (t *Transcoder) probeVideo(path string) (*VideoFile, error) {
 	for _, stream := range probe.Streams {
 		switch stream.CodecType {
 		case "video":
-			// 检查是否是封面流（附加图片）
-			if stream.Disposition.AttachedPic == 1 ||
-				stream.CodecName == "mjpeg" ||
-				stream.CodecName == "png" {
+			// attached_pic 是封面的可靠标记。不能仅凭 mjpeg/png 判断，
+			// 否则真正的 MJPEG 主视频会被误当成封面。
+			if stream.Disposition.AttachedPic == 1 {
 				video.HasCover = true
 				video.CoverIndex = stream.Index
 			} else if video.VideoIndex == -1 {
@@ -624,6 +653,10 @@ func (t *Transcoder) probeVideo(path string) (*VideoFile, error) {
 				if video.TotalFrames == 0 && video.Duration > 0 && video.FrameRate > 0 {
 					video.TotalFrames = int64(video.Duration * video.FrameRate)
 				}
+			} else if video.CoverIndex == -1 && (stream.CodecName == "mjpeg" || stream.CodecName == "png") {
+				// 兼容少数没有写 disposition、但位于主视频之后的旧封面流。
+				video.HasCover = true
+				video.CoverIndex = stream.Index
 			}
 		case "audio":
 			if video.AudioIndex == -1 {
@@ -659,6 +692,12 @@ func parseFrameRate(frameRateStr string) float64 {
 
 // AddTask 添加转码任务
 func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*TranscodeTask, error) {
+	absPath, err := filepath.Abs(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("无法规范化输入路径: %w", err)
+	}
+	inputPath = filepath.Clean(absPath)
+
 	// 检查输入文件是否存在
 	inputInfo, err := os.Stat(inputPath)
 	if os.IsNotExist(err) {
@@ -682,12 +721,6 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 	outputPath := config.ExplicitOutputPath
 	if outputPath == "" {
 		outputPath = t.buildOutputPath(inputPath, config)
-	}
-
-	// 获取视频信息
-	videoInfo, err := t.probeVideo(inputPath)
-	if err != nil {
-		log.Printf("[transcoder] 无法获取视频信息: %v", err)
 	}
 
 	// 分配序号（原子递增）
@@ -714,37 +747,7 @@ func (t *Transcoder) AddTask(inputPath string, config TranscodeConfig) (*Transco
 		task.WorkingOutputPath = outputPath
 	}
 
-	// 设置完整的视频元数据，用于全局剩余时间估算
-	if videoInfo != nil {
-		task.Duration = videoInfo.Duration
-		task.Width = videoInfo.Width
-		task.Height = videoInfo.Height
-		task.FrameRate = videoInfo.FrameRate
-		task.TotalFrames = videoInfo.TotalFrames
-
-		// 计算预测处理速度和总时间（基于实测速度，无实测数据时不预测）
-		// 考虑帧率上限：如果设置了 MaxFPS 且源帧率超过上限，使用有效帧数估算
-		task.PredictedFPS = t.getDynamicPredictedFPS(videoInfo.Width, videoInfo.Height)
-		effectiveFrames := getEffectiveFrames(task)
-		if effectiveFrames > 0 && task.PredictedFPS > 0 {
-			task.PredictedTotalTime = float64(effectiveFrames) / task.PredictedFPS
-			task.PredictedTimeString = formatETADuration(task.PredictedTotalTime)
-		} else {
-			// 无实测数据，显示占位符
-			task.PredictedTimeString = "--:--"
-		}
-
-		// 日志中显示源帧数和有效帧数（如果不同）
-		if effectiveFrames != task.TotalFrames && effectiveFrames > 0 {
-			log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧 (限帧后 %d 帧), 预测处理时间: %s",
-				filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
-				videoInfo.FrameRate, videoInfo.TotalFrames, effectiveFrames, task.PredictedTimeString)
-		} else {
-			log.Printf("[transcoder] 任务添加: %s, %dx%d, %.2f fps, %d 帧, 预测处理时间: %s",
-				filepath.Base(inputPath), videoInfo.Width, videoInfo.Height,
-				videoInfo.FrameRate, videoInfo.TotalFrames, task.PredictedTimeString)
-		}
-	}
+	task.PredictedTimeString = "--:--"
 
 	// 加入队列（先入队成功，再加入 map，确保原子性）
 	select {
@@ -1210,11 +1213,11 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 	}
 
 	args = append(args, "-i", task.InputPath)
-	if task.Config.ExternalCoverPath != "" {
+	hasCover := task.Config.PreserveCover && videoInfo != nil && videoInfo.HasCover && videoInfo.CoverIndex >= 0
+	useExternalCover := task.Config.PreserveCover && !hasCover && task.Config.ExternalCoverPath != ""
+	if useExternalCover {
 		args = append(args, "-i", task.Config.ExternalCoverPath)
 	}
-
-	hasCover := videoInfo != nil && videoInfo.HasCover && videoInfo.CoverIndex >= 0
 
 	// 帧率上限过滤
 	fpsFilter := buildFPSFilter(task, videoInfo, task.Config.MaxFPS)
@@ -1223,7 +1226,7 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		customArgs = mergeVideoFilter(customArgs, fpsFilter)
 	}
 
-	if task.Config.ExternalCoverPath != "" {
+	if useExternalCover {
 		args = append(args, "-map", "0:v:0", "-map", "0:a:0?", "-map", "1:v:0")
 		args = append(args, normalizeVideoStreamSelectors(customArgs)...)
 		args = append(args, "-c:v:1", "copy", "-disposition:v:1", "attached_pic")
@@ -1252,7 +1255,7 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		// 无封面流：仅映射视频和音频
 		args = append(args, "-map", "0:v:0")
 		args = append(args, "-map", "0:a:0?")
-		args = append(args, customArgs...)
+		args = append(args, normalizeVideoStreamSelectors(customArgs)...)
 	}
 
 	outputPath := task.WorkingOutputPath
@@ -1348,6 +1351,18 @@ func normalizeVideoStreamSelectors(args []string) []string {
 		"-crf:v",
 		"-qp:v",
 		"-cq:v",
+		// QSV/NVENC/AMF 常见的无流选择器视频选项。若不限定为视频流，
+		// -global_quality 会被 FFmpeg 同时传给 libopus，导致正常文件直接失败。
+		"-global_quality",
+		"-look_ahead",
+		"-look_ahead_depth",
+		"-low_power",
+		"-preset",
+		"-quality",
+		"-rc",
+		"-qp_i",
+		"-qp_p",
+		"-qp_b",
 	}
 
 	for i, arg := range args {
@@ -1357,7 +1372,11 @@ func normalizeVideoStreamSelectors(args []string) []string {
 		for _, prefix := range videoOptionPrefixes {
 			// 精确匹配 "-option:v"（不是已经带数字的如 "-option:v:0"）
 			if arg == prefix {
-				processed = prefix + ":0"
+				if strings.Contains(prefix, ":v") {
+					processed = prefix + ":0"
+				} else {
+					processed = prefix + ":v:0"
+				}
 				break
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -663,6 +664,46 @@ func (a *App) SelectFolder() string {
 	return selectFolderDialog()
 }
 
+type ServerDirectoryListing struct {
+	Current string   `json:"current"`
+	Parent  string   `json:"parent"`
+	Dirs    []string `json:"dirs"`
+}
+
+// ListServerDirectories 为 Web 管理页提供服务器端目录选择。
+// 浏览器的原生文件选择器只能看到客户端电脑，不能选择服务器路径。
+func (a *App) ListServerDirectories(path string) (ServerDirectoryListing, error) {
+	if path == "" && a.config != nil {
+		path = a.config.Processing.OutputRoot
+	}
+	if path == "" {
+		path = "."
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return ServerDirectoryListing{}, fmt.Errorf("解析目录失败: %w", err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil || !info.IsDir() {
+		return ServerDirectoryListing{}, fmt.Errorf("目录不存在或不可访问: %s", absPath)
+	}
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return ServerDirectoryListing{}, fmt.Errorf("读取目录失败: %w", err)
+	}
+	listing := ServerDirectoryListing{Current: absPath}
+	parent := filepath.Dir(absPath)
+	if parent != absPath {
+		listing.Parent = parent
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			listing.Dirs = append(listing.Dirs, filepath.Join(absPath, entry.Name()))
+		}
+	}
+	return listing, nil
+}
+
 // ScanVideoFolder 扫描文件夹中的视频文件
 func (a *App) ScanVideoFolder(path string) []transcoder.VideoFile {
 	if a.transcoder == nil {
@@ -757,6 +798,7 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		OutputExt:             outputExt,
 		DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
 		MaxFPS:                maxFPS,
+		PreserveCover:         req.PreserveCover,
 	}
 
 	log.Printf("[app] 开始转码: files=%d, format=%s, maxFPS=%.2f, deleteSource=%v",

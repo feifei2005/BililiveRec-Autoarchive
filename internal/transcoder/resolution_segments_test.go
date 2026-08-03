@@ -238,6 +238,27 @@ func TestSetMaxWorkersRapidResizeDoesNotDuplicateWorkers(t *testing.T) {
 	waitForActiveWorkers(t, transcoder, 1)
 }
 
+func TestWorkerSupervisorRestoresMissingWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	transcoder := New(Config{MaxWorkers: 1})
+	transcoder.ctx = ctx
+	transcoder.workersMu.Lock()
+	transcoder.workersStarted = true
+	transcoder.activeWorkers = 0
+	transcoder.workersMu.Unlock()
+	transcoder.wg.Add(1)
+	go transcoder.workerSupervisor()
+	waitForActiveWorkers(t, transcoder, 1)
+	cancel()
+	done := make(chan struct{})
+	go func() { transcoder.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("supervised worker did not stop")
+	}
+}
+
 func TestBuildQSVNV12InputArgsForcesIntelDecode(t *testing.T) {
 	tests := []struct {
 		name  string

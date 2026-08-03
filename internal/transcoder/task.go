@@ -88,6 +88,9 @@ type TranscodeConfig struct {
 	// 无论此值为多少，均会启用可变帧率（VFR）模式
 	MaxFPS float64 `json:"max_fps" yaml:"max_fps"`
 
+	// PreserveCover 保留已有内嵌封面，或在没有内嵌封面时合并外部封面。
+	PreserveCover bool `json:"preserve_cover" yaml:"preserve_cover"`
+
 	// 以下字段用于自动流水线，不通过 Web API 暴露。
 	ExplicitOutputPath           string `json:"-" yaml:"-"`
 	ExternalCoverPath            string `json:"-" yaml:"-"`
@@ -133,6 +136,7 @@ func DefaultTranscodeConfig() TranscodeConfig {
 		QSVReinitStrategy: "nv12",
 		CustomArgs:        "-c:v av1_qsv -global_quality 23 -look_ahead 1 -c:a aac -b:a 192k -f mp4",
 		OutputExt:         ".mp4",
+		PreserveCover:     true,
 	}
 }
 

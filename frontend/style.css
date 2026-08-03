@@ -744,6 +744,45 @@ body {
     padding: 0.625rem 1rem;
 }
 
+.folder-modal-content {
+    max-width: 680px;
+}
+
+.folder-current {
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow-wrap: anywhere;
+}
+
+.server-folder-list {
+    min-height: 240px;
+    max-height: 50vh;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    margin-bottom: 1rem;
+}
+
+.server-folder-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.625rem 0.75rem;
+    border: 0;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.server-folder-item:hover {
+    background: var(--bg-color);
+}
+
 .btn-danger {
     background: var(--error-color);
     color: white;

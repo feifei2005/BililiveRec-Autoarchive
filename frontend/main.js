@@ -780,6 +780,10 @@ async function loadTranscodePage() {
 // 选择文件夹
 async function selectTranscodeFolder() {
     try {
+        if (document.documentElement.classList.contains('web-mode')) {
+            await openServerFolderBrowser(document.getElementById('transcode-folder').value);
+            return;
+        }
         const result = await window.go.app.App.SelectFolder();
         if (result) {
             document.getElementById('transcode-folder').value = result;
@@ -788,6 +792,48 @@ async function selectTranscodeFolder() {
         console.error('选择文件夹失败:', error);
         showToast('选择文件夹失败', 'error');
     }
+}
+
+let serverFolderCurrent = '';
+
+async function openServerFolderBrowser(path = '') {
+    const modal = document.getElementById('server-folder-modal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    await loadServerFolder(path);
+}
+
+async function loadServerFolder(path) {
+    const listing = await window.go.app.App.ListServerDirectories(path || '');
+    serverFolderCurrent = listing.current;
+    document.getElementById('server-folder-current').textContent = listing.current;
+    const list = document.getElementById('server-folder-list');
+    list.replaceChildren();
+
+    const addDirectoryButton = (label, target) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'server-folder-item';
+        button.textContent = label;
+        button.addEventListener('click', () => loadServerFolder(target));
+        list.appendChild(button);
+    };
+    if (listing.parent) addDirectoryButton('↑ 上级目录', listing.parent);
+    for (const dir of listing.dirs || []) {
+        const name = dir.replace(/[\\/]$/, '').split(/[\\/]/).pop() || dir;
+        addDirectoryButton(`📁 ${name}`, dir);
+    }
+}
+
+function closeServerFolderBrowser() {
+    document.getElementById('server-folder-modal').style.display = 'none';
+}
+
+function selectCurrentServerFolder() {
+    if (serverFolderCurrent) {
+        document.getElementById('transcode-folder').value = serverFolderCurrent;
+    }
+    closeServerFolderBrowser();
 }
 
 // 扫描文件夹
@@ -1306,6 +1352,8 @@ function initTranscodeEvents() {
     // 文件夹选择和扫描
     document.getElementById('btn-select-folder')?.addEventListener('click', selectTranscodeFolder);
     document.getElementById('btn-scan-folder')?.addEventListener('click', scanTranscodeFolder);
+    document.getElementById('server-folder-select-btn')?.addEventListener('click', selectCurrentServerFolder);
+    document.getElementById('server-folder-cancel-btn')?.addEventListener('click', closeServerFolderBrowser);
     
     // 转码控制
     document.getElementById('btn-save-transcode-settings')?.addEventListener('click', saveTranscodeSettings);
@@ -1495,6 +1543,25 @@ function initMaxFpsInput() {
 function initDropZone() {
     const dropZone = document.getElementById('drop-zone');
     if (!dropZone) return;
+
+    if (document.documentElement.classList.contains('web-mode')) {
+        dropZone.querySelector('.drop-zone-text').textContent = '扫描上方填写的服务器目录';
+        dropZone.querySelector('.drop-zone-hint').textContent = 'Web 管理页不会上传浏览器本地的大视频文件';
+        dropZone.addEventListener('click', async () => {
+            if (document.getElementById('transcode-folder').value.trim()) {
+                await scanTranscodeFolder();
+            } else {
+                await selectTranscodeFolder();
+            }
+        });
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, e => {
+                preventDefaults(e);
+                if (eventName === 'drop') showToast('请先把文件放到服务器目录，再使用扫描', 'warning');
+            });
+        });
+        return;
+    }
     
     // 阻止默认拖拽行为
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {

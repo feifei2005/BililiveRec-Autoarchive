@@ -18,6 +18,7 @@ var allowedMethods = map[string]bool{
 	"GetTranscodeGlobalStatus": true, "GetTranscodeMaxWorkers": true,
 	"GetTranscodePauseStatus": true, "GetTranscodeSettings": true,
 	"GetTranscodeTasks": true, "IsAutoStartEnabled": true,
+	"ListServerDirectories": true,
 	"OpenTranscodeErrorLog": true, "PauseRemux": true,
 	"PauseRemuxAfterCurrent": true, "PauseTranscode": true,
 	"PauseTranscodeAfterCurrent": true, "RequestShutdown": true,
