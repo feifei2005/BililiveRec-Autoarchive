@@ -701,6 +701,7 @@ async function loadTranscodeSettings() {
             preserveCover: true,
             deleteSourceOnSuccess: false,
             maxFps: 0,
+            limitResolution: false,
             qsvReinitStrategy: 'nv12'
         };
     }
@@ -735,6 +736,11 @@ async function loadTranscodePage() {
     const maxFpsInput = document.getElementById('max-fps');
     if (maxFpsInput && !maxFpsInput.value) {
         maxFpsInput.value = formatMaxFps(settings.maxFps);
+    }
+
+    const limitResolutionCheckbox = document.getElementById('limit-resolution');
+    if (limitResolutionCheckbox) {
+        limitResolutionCheckbox.checked = settings.limitResolution === true;
     }
     
     // 恢复输出格式
@@ -909,6 +915,7 @@ async function startTranscode() {
     const inputArgs = document.getElementById('ffmpeg-input-args').value.trim();
     const preserveCover = document.getElementById('preserve-cover').checked;
     const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
+    const limitResolution = document.getElementById('limit-resolution')?.checked === true;
 
     // 解析帧率上限
     const maxFpsInput = document.getElementById('max-fps').value.trim();
@@ -933,6 +940,7 @@ async function startTranscode() {
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
             maxFps: maxFps,
+            limitResolution: limitResolution,
             qsvReinitStrategy: qsvStrategy
         });
         
@@ -1266,6 +1274,7 @@ async function saveTranscodeSettings() {
     const inputArgs = document.getElementById('ffmpeg-input-args').value.trim();
     const preserveCover = document.getElementById('preserve-cover').checked;
     const deleteSourceOnSuccess = document.getElementById('delete-source-on-success').checked;
+    const limitResolution = document.getElementById('limit-resolution')?.checked === true;
 
     // 解析帧率上限
     const maxFpsInput = document.getElementById('max-fps').value.trim();
@@ -1298,6 +1307,7 @@ async function saveTranscodeSettings() {
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
             maxFps: maxFps,
+            limitResolution: limitResolution,
             qsvReinitStrategy: qsvStrategy
         });
 
@@ -1312,6 +1322,7 @@ async function saveTranscodeSettings() {
             preserveCover: preserveCover,
             deleteSourceOnSuccess: deleteSourceOnSuccess,
             maxFps: maxFps,
+            limitResolution: limitResolution,
             qsvReinitStrategy: qsvStrategy
         };
 

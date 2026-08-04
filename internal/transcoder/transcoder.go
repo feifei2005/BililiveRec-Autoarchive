@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1219,11 +1220,11 @@ func (t *Transcoder) buildFFmpegArgs(task *TranscodeTask, videoInfo *VideoFile) 
 		args = append(args, "-i", task.Config.ExternalCoverPath)
 	}
 
-	// 帧率上限过滤
-	fpsFilter := buildFPSFilter(task, videoInfo, task.Config.MaxFPS)
+	// 自动帧率和分辨率过滤
+	automaticFilter := buildAutomaticVideoFilter(task, videoInfo)
 	customArgs := strings.Fields(task.Config.CustomArgs)
-	if fpsFilter != "" {
-		customArgs = mergeVideoFilter(customArgs, fpsFilter)
+	if automaticFilter != "" {
+		customArgs = mergeVideoFilter(customArgs, automaticFilter)
 	}
 
 	if useExternalCover {
@@ -1289,6 +1290,69 @@ func buildFPSFilter(task *TranscodeTask, videoInfo *VideoFile, maxFPS float64) s
 	}
 	log.Printf("[transcoder] 应用帧率限制: 源 %.2f fps > 目标 %.2f fps，将降低帧率", sourceFPS, maxFPS)
 	return fmt.Sprintf("fps=fps=%v", maxFPS)
+}
+
+func buildAutomaticVideoFilter(task *TranscodeTask, videoInfo *VideoFile) string {
+	filters := make([]string, 0, 2)
+	if fpsFilter := buildFPSFilter(task, videoInfo, task.Config.MaxFPS); fpsFilter != "" {
+		filters = append(filters, fpsFilter)
+	}
+	if scaleFilter := buildResolutionScaleFilter(task, videoInfo); scaleFilter != "" {
+		filters = append(filters, scaleFilter)
+	}
+	return strings.Join(filters, ",")
+}
+
+// buildResolutionScaleFilter 对超过 2560x1440 边界的输入选择 0.75x 或 0.5x，
+// 以保持宽高比并让短边尽量接近 1080。主路径使用 QSV 高质量缩放；
+// NV12 回退路径已经位于系统内存，因此使用 Lanczos 软件缩放。
+func buildResolutionScaleFilter(task *TranscodeTask, videoInfo *VideoFile) string {
+	if !task.Config.LimitResolution {
+		return ""
+	}
+	width, height := task.Width, task.Height
+	if videoInfo != nil {
+		width, height = videoInfo.Width, videoInfo.Height
+	}
+	if width <= 0 || height <= 0 || (width <= 2560 && height <= 1440) {
+		return ""
+	}
+
+	shortEdge := width
+	if height < shortEdge {
+		shortEdge = height
+	}
+	factor := 0.75
+	if math.Abs(float64(shortEdge)*0.5-1080) < math.Abs(float64(shortEdge)*0.75-1080) {
+		factor = 0.5
+	}
+	targetWidth := roundToEven(float64(width) * factor)
+	targetHeight := roundToEven(float64(height) * factor)
+
+	if !hasQSVHardwareOutput(task.Config.InputArgs) {
+		log.Printf("[transcoder] 分辨率降采样: %dx%d -> %dx%d (Lanczos NV12)", width, height, targetWidth, targetHeight)
+		return fmt.Sprintf("scale=w=%d:h=%d:flags=lanczos", targetWidth, targetHeight)
+	}
+	log.Printf("[transcoder] 分辨率降采样: %dx%d -> %dx%d (QSV HQ)", width, height, targetWidth, targetHeight)
+	return fmt.Sprintf("scale_qsv=w=%d:h=%d:mode=hq", targetWidth, targetHeight)
+}
+
+func roundToEven(value float64) int {
+	result := int(math.Round(value/2) * 2)
+	if result < 2 {
+		return 2
+	}
+	return result
+}
+
+func hasQSVHardwareOutput(inputArgs string) bool {
+	args := strings.Fields(inputArgs)
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-hwaccel_output_format" {
+			return strings.EqualFold(args[i+1], "qsv")
+		}
+	}
+	return false
 }
 
 // mergeVideoFilter 将新的视频过滤器与现有的 -vf 参数合并

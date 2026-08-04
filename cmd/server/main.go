@@ -97,13 +97,17 @@ func main() {
 		MaxWorkers: cfg.Transcode.MaxConcurrent,
 	})
 	tc.SetQSVReinitStrategy(transcoder.QSVReinitStrategy(cfg.Transcode.QSVReinitStrategy))
-	taskConfig := transcoder.TranscodeConfig{
+	initialTaskConfig := transcoder.TranscodeConfig{
 		InputArgs: cfg.Transcode.InputArgs, QSVReinitStrategy: cfg.Transcode.QSVReinitStrategy,
 		CustomArgs: cfg.Transcode.DefaultParams, OutputDir: cfg.Transcode.OutputDir,
 		OutputExt: normalizeOutputExt(cfg.Transcode.DefaultFormat), MaxFPS: cfg.Transcode.MaxFPS,
+		LimitResolution:       cfg.Transcode.LimitResolution,
 		DeleteSourceOnSuccess: true, PublishAfterSuccess: true, PreserveCover: cfg.Transcode.PreserveCover,
 	}
+	var defaultTaskConfig atomic.Value
+	defaultTaskConfig.Store(initialTaskConfig)
 	enqueueWaiting := func(group waitingGroup) error {
+		taskConfig := defaultTaskConfig.Load().(transcoder.TranscodeConfig)
 		finalPath, err := finalOutputPath(cfg.Processing.OutputRoot, cfg.Transcode.OutputDir, group.VideoPath, taskConfig.OutputExt, cfg.Processing.ConflictMode)
 		if err != nil {
 			return err
@@ -166,6 +170,15 @@ func main() {
 	appState.SetProcessor(archiveProcessor)
 	appState.SetStorage(store)
 	appState.SetTranscoder(tc)
+	appState.SetTranscodeSettingsSavedCallback(func(settings app.TranscodeSettings) {
+		defaultTaskConfig.Store(transcoder.TranscodeConfig{
+			InputArgs: settings.InputArgs, QSVReinitStrategy: settings.QSVReinitStrategy,
+			CustomArgs: settings.Params, OutputDir: cfg.Transcode.OutputDir,
+			OutputExt: normalizeOutputExt(settings.Format), MaxFPS: settings.MaxFPS,
+			LimitResolution:       settings.LimitResolution,
+			DeleteSourceOnSuccess: true, PublishAfterSuccess: true, PreserveCover: settings.PreserveCover,
+		})
+	})
 
 	var processorStopped atomic.Bool
 	triggerScan := func() {
@@ -199,7 +212,7 @@ func main() {
 		BindAddress: cfg.Server.BindAddress, APIToken: cfg.Server.APIToken,
 		Port: cfg.Server.Port, WebhookPath: cfg.Server.WebhookPath,
 		InputDir: cfg.Processing.InputDir, MaxFPS: cfg.Transcode.MaxFPS,
-		DefaultTranscode: taskConfig,
+		DefaultTranscode: initialTaskConfig,
 	})
 	auth, err := webauth.New(filepath.Join(filepath.Dir(absConfigPath), "server-auth.json"))
 	if err != nil {

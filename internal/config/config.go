@@ -82,6 +82,8 @@ type TranscodeConfig struct {
 	// 帧率上限（0 或空表示不限制）
 	// 支持的值: 24, 25, 29.97, 30, 50, 59.94, 60 或自定义值
 	MaxFPS float64 `yaml:"max_fps"`
+	// 超出 2560x1440 时按比例降采样到最接近的 1080p 级分辨率
+	LimitResolution bool `yaml:"limit_resolution"`
 	// 是否保留封面
 	PreserveCover bool `yaml:"preserve_cover"`
 	// 转码成功后删除源文件
@@ -156,6 +158,7 @@ func Default() *Config {
 			OutputDir:             "",
 			DeleteSource:          false,
 			MaxFPS:                0, // 0 表示不限制帧率
+			LimitResolution:       false,
 			PreserveCover:         true,
 			DeleteSourceOnSuccess: false,
 			QSVReinitStrategy:     "nv12",

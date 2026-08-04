@@ -494,6 +494,7 @@ func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
 		OutputDir             string   `json:"outputDir"`
 		OutputExt             string   `json:"outputExt"`
 		QSVReinitStrategy     string   `json:"qsvReinitStrategy"`
+		LimitResolution       *bool    `json:"limitResolution"`
 		DeleteSourceOnSuccess *bool    `json:"deleteSourceOnSuccess"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -538,6 +539,9 @@ func (s *Server) handleStartTranscode(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.QSVReinitStrategy != "" {
 		config.QSVReinitStrategy = req.QSVReinitStrategy
+	}
+	if req.LimitResolution != nil {
+		config.LimitResolution = *req.LimitResolution
 	}
 	if req.DeleteSourceOnSuccess != nil {
 		config.DeleteSourceOnSuccess = *req.DeleteSourceOnSuccess

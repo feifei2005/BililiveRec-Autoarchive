@@ -37,6 +37,7 @@ transcode:
   max_concurrent: 1
   output_dir: "./output"
   max_fps: 0
+  limit_resolution: false
   preserve_cover: true
   delete_source_on_success: true
   qsv_reinit_strategy: "nv12"

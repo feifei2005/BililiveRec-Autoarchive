@@ -88,6 +88,9 @@ type TranscodeConfig struct {
 	// 无论此值为多少，均会启用可变帧率（VFR）模式
 	MaxFPS float64 `json:"max_fps" yaml:"max_fps"`
 
+	// LimitResolution 在任一边超过 2560x1440 边界时按比例降采样。
+	LimitResolution bool `json:"limit_resolution" yaml:"limit_resolution"`
+
 	// PreserveCover 保留已有内嵌封面，或在没有内嵌封面时合并外部封面。
 	PreserveCover bool `json:"preserve_cover" yaml:"preserve_cover"`
 

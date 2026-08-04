@@ -34,6 +34,7 @@ type App struct {
 	onHideWindow              func()
 	onShutdownNow             func()                // 立即关闭回调
 	onShutdownAfterCompletion func(callback func()) // 等待任务完成后关闭回调
+	onTranscodeSettingsSaved  func(TranscodeSettings)
 }
 
 // NewApp 创建新的应用实例
@@ -74,6 +75,11 @@ func (a *App) SetAutostart(as *autostart.AutoStart) {
 // SetTranscoder 设置转码器
 func (a *App) SetTranscoder(t *transcoder.Transcoder) {
 	a.transcoder = t
+}
+
+// SetTranscodeSettingsSavedCallback 设置转码默认值保存后的热更新回调。
+func (a *App) SetTranscodeSettingsSavedCallback(callback func(TranscodeSettings)) {
+	a.onTranscodeSettingsSaved = callback
 }
 
 // GetTranscoder 获取转码器实例
@@ -206,7 +212,6 @@ func (a *App) SaveConfig(data ConfigData) error {
 	if err := a.config.Save(a.configFilePath()); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
-
 	// 通知 processor 更新运行时配置（热更新）
 	if a.processor != nil {
 		processorConfig := processor.Config{
@@ -558,7 +563,8 @@ type TranscodeRequest struct {
 	InputArgs             string   `json:"inputArgs"` // FFmpeg 输入选项，放在 -i 之前（如 -hwaccel qsv）
 	PreserveCover         bool     `json:"preserveCover"`
 	DeleteSourceOnSuccess bool     `json:"deleteSourceOnSuccess"`
-	MaxFPS                float64  `json:"maxFps"`            // 帧率上限，0 表示不限制（任务级默认）
+	MaxFPS                float64  `json:"maxFps"` // 帧率上限，0 表示不限制（任务级默认）
+	LimitResolution       bool     `json:"limitResolution"`
 	QSVReinitStrategy     string   `json:"qsvReinitStrategy"` // QSV 滤镜链重初始化失败回退策略
 }
 
@@ -570,6 +576,7 @@ type TranscodeSettings struct {
 	PreserveCover         bool    `json:"preserveCover"`
 	DeleteSourceOnSuccess bool    `json:"deleteSourceOnSuccess"`
 	MaxFPS                float64 `json:"maxFps"`
+	LimitResolution       bool    `json:"limitResolution"`
 	QSVReinitStrategy     string  `json:"qsvReinitStrategy"` // QSV 滤镜链重初始化失败回退策略：error/segment/nv12
 }
 
@@ -592,6 +599,7 @@ func (a *App) GetTranscodeSettings() TranscodeSettings {
 		PreserveCover:         a.config.Transcode.PreserveCover,
 		DeleteSourceOnSuccess: a.config.Transcode.DeleteSourceOnSuccess,
 		MaxFPS:                a.config.Transcode.MaxFPS,
+		LimitResolution:       a.config.Transcode.LimitResolution,
 		QSVReinitStrategy:     a.config.Transcode.QSVReinitStrategy,
 	}
 }
@@ -609,6 +617,7 @@ func (a *App) SaveTranscodeSettings(settings TranscodeSettings) error {
 	a.config.Transcode.PreserveCover = settings.PreserveCover
 	a.config.Transcode.DeleteSourceOnSuccess = settings.DeleteSourceOnSuccess
 	a.config.Transcode.MaxFPS = settings.MaxFPS
+	a.config.Transcode.LimitResolution = settings.LimitResolution
 	a.config.Transcode.QSVReinitStrategy = settings.QSVReinitStrategy
 
 	// 验证和补全配置
@@ -623,9 +632,12 @@ func (a *App) SaveTranscodeSettings(settings TranscodeSettings) error {
 	if err := a.config.Save(a.configFilePath()); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
+	if a.onTranscodeSettingsSaved != nil {
+		a.onTranscodeSettingsSaved(settings)
+	}
 
-	log.Printf("[app] 转码设置已保存: format=%s, maxFPS=%.2f, deleteSource=%v, preserveCover=%v, qsvStrategy=%s",
-		settings.Format, settings.MaxFPS, settings.DeleteSourceOnSuccess, settings.PreserveCover, a.config.Transcode.QSVReinitStrategy)
+	log.Printf("[app] 转码设置已保存: format=%s, maxFPS=%.2f, limitResolution=%v, deleteSource=%v, preserveCover=%v, qsvStrategy=%s",
+		settings.Format, settings.MaxFPS, settings.LimitResolution, settings.DeleteSourceOnSuccess, settings.PreserveCover, a.config.Transcode.QSVReinitStrategy)
 	return nil
 }
 
@@ -783,6 +795,7 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 			PreserveCover:         req.PreserveCover,
 			DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
 			MaxFPS:                maxFPS,
+			LimitResolution:       req.LimitResolution,
 			QSVReinitStrategy:     req.QSVReinitStrategy,
 		}
 		if err := a.SaveTranscodeSettings(settings); err != nil {
@@ -798,6 +811,7 @@ func (a *App) StartTranscode(req TranscodeRequest) TranscodeResult {
 		OutputExt:             outputExt,
 		DeleteSourceOnSuccess: req.DeleteSourceOnSuccess,
 		MaxFPS:                maxFPS,
+		LimitResolution:       req.LimitResolution,
 		PreserveCover:         req.PreserveCover,
 	}
 

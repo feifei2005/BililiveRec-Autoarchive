@@ -280,6 +280,56 @@ func TestBuildQSVNV12InputArgsForcesIntelDecode(t *testing.T) {
 	}
 }
 
+func TestBuildResolutionScaleFilter(t *testing.T) {
+	tests := []struct {
+		name      string
+		enabled   bool
+		inputArgs string
+		width     int
+		height    int
+		want      string
+	}{
+		{name: "disabled", width: 3840, height: 2160},
+		{name: "four by three 1080 class", enabled: true, width: 1600, height: 1280},
+		{name: "ultrawide boundary", enabled: true, width: 2560, height: 1080},
+		{name: "exact boundary", enabled: true, width: 2560, height: 1440},
+		{name: "2k 16 by 10", enabled: true, width: 2560, height: 1600, want: "scale_qsv=w=1920:h=1200:mode=hq"},
+		{name: "4k 16 by 9", enabled: true, width: 3840, height: 2160, want: "scale_qsv=w=1920:h=1080:mode=hq"},
+		{name: "4k 16 by 10", enabled: true, width: 3840, height: 2400, want: "scale_qsv=w=1920:h=1200:mode=hq"},
+		{name: "portrait 2k", enabled: true, width: 1600, height: 2560, want: "scale_qsv=w=1200:h=1920:mode=hq"},
+		{name: "nv12 fallback uses lanczos", enabled: true, inputArgs: "-hwaccel qsv -hwaccel_output_format nv12", width: 3840, height: 2160, want: "scale=w=1920:h=1080:flags=lanczos"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputArgs := tt.inputArgs
+			if inputArgs == "" {
+				inputArgs = "-hwaccel qsv -hwaccel_output_format qsv"
+			}
+			task := &TranscodeTask{Config: TranscodeConfig{LimitResolution: tt.enabled, InputArgs: inputArgs}}
+			got := buildResolutionScaleFilter(task, &VideoFile{Width: tt.width, Height: tt.height})
+			if got != tt.want {
+				t.Fatalf("buildResolutionScaleFilter(%dx%d) = %q, want %q", tt.width, tt.height, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAutomaticVideoFilterCombinesFPSAndQSVScale(t *testing.T) {
+	task := &TranscodeTask{
+		FrameRate: 60,
+		Config: TranscodeConfig{
+			InputArgs: "-hwaccel qsv -hwaccel_output_format qsv",
+			MaxFPS:    30, LimitResolution: true,
+		},
+	}
+	got := buildAutomaticVideoFilter(task, &VideoFile{Width: 3840, Height: 2160, FrameRate: 60})
+	want := "fps=fps=30,scale_qsv=w=1920:h=1080:mode=hq"
+	if got != want {
+		t.Fatalf("buildAutomaticVideoFilter() = %q, want %q", got, want)
+	}
+}
+
 func TestNV12FallbackPoolIsSingleConcurrency(t *testing.T) {
 	transcoder := New(Config{MaxWorkers: 1})
 	started := make(chan string, 2)
